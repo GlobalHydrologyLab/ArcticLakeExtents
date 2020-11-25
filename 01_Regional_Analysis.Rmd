@@ -1,0 +1,250 @@
+---
+title: "Arctic_Lake_Analysis"
+author: "Simon Topp"
+date: "11/23/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(mapview)
+library(sf)
+library(feather)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+lakes <- read_csv('data/in/LakesObu_90m_wClim.csv') %>%
+  select(pf = pffirst, region = tcodefirst, year = yearfirst, 
+         area = sum, tempA = temp_amean, tempS = temp_smean, precipA = precip_amean, 
+         precipS = precip_smean, .geo) %>%
+  mutate(area = area/1e6,
+         region = factor(region, levels = c(1:6), 
+                         labels = c('Mackenzie', 'North America West', 
+                                    'North America East', 'Siberia West', 'Siberia East', 'Alaska')),
+         pf = factor(pf, levels = c(1:4), labels = c('Cont.', 'Discon.', 'Spora.', 'Isol')))
+
+## Fix the geo columns
+lakes <- lakes %>% 
+  separate(.geo, into = c('text', 'coords'), sep = ':\\[') %>% 
+  separate(coords, into = c('long', 'lat'), sep = ',') %>% 
+  mutate(long = as.numeric(long), 
+         lat = gsub(lat, pattern = '\\]}', replacement = ''), 
+         lat = as.numeric(lat)) %>%
+  select(-text)
+
+write_feather(lakes, 'data/out/lakes_90mClim_munged.feather')
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+```{r pressure, echo=FALSE}
+lakes <- read_feather('data/out/lakes_90m_munged.feather')
+
+ggplot(lakes, aes(x = area)) + geom_histogram() + scale_x_continuous(trans = 'log10') +
+  facet_wrap(~region, scales = 'free')
+
+ggplot(lakes, aes(x = area, color = year, group = year)) + geom_density() +
+  scale_color_viridis_c(option = 'plasma') +
+  scale_x_continuous(trans = 'log10') +
+  facet_wrap(~pf)
+  
+lakes.summ <- lakes %>%
+  group_by(region, year, pf) %>%
+  summarise(count = n(), 
+            area = sum(area),
+            ta = mean(tempA),
+            ts = mean(tempS),
+            pa = mean(precipA),
+            ps = mean(precipS))
+
+```
+
+
+```{r}
+plotter <- function(studyReg){
+  areaCol <- viridis::viridis(1)
+  countCol <- viridis::viridis(1, begin = .5)
+  waterC <- lakes.summ %>% filter(region == studyReg & pf == 'Cont.')
+  coefC <- mean(waterC$count)/mean(waterC$area)
+ p1 <- ggplot(waterC, aes(x = year)) +
+    #geom_smooth(aes(y = area), span = .2, color = areaCol) +
+    #geom_smooth(aes(y = count/coefC), span = .2, color = countCol) + 
+    geom_line(aes(y = area), color = areaCol) +
+    geom_line(aes(y = count/coefC), color = countCol) + 
+    scale_y_continuous(
+    name = "Area (sq km)",
+    sec.axis = sec_axis(~.*coefC, name="Lake Count")) +
+    labs(subtitle = 'Continuous') +
+    theme_bw() +
+    theme(
+    axis.text.y = element_text(color = areaCol),
+    axis.text.y.right = element_text(color = countCol),
+    axis.title.y.right = element_blank(),
+    axis.title.y = element_text(color = areaCol, size=13),
+    axis.title.x = element_blank())
+ 
+  waterD <- lakes.summ %>% filter(region == studyReg & pf == 'Discon.')
+  coefD <- mean(waterD$count)/mean(waterD$area)
+  p2 <- ggplot(waterD, aes(x = year)) +
+    #geom_smooth(aes(y = area), span = .2, color = areaCol) +
+    #geom_smooth(aes(y = count/coefD), span = .2, color = countCol) + 
+    geom_line(aes(y = area), color = areaCol) +
+    geom_line(aes(y = count/coefD), color = countCol) + 
+    scale_y_continuous(
+    name = "Area (sq km)",
+    sec.axis = sec_axis(~.*coefD, name="Lake Count")) +
+    labs(subtitle = 'Discontinuous') +
+    theme_bw() +
+    theme(
+    axis.text.y = element_text(color = areaCol),
+    axis.text.y.right = element_text(color = countCol),
+    axis.title.y = element_blank(),
+    axis.title.y.right = element_blank(),
+    axis.title.x = element_blank())
+  
+  waterS <- lakes.summ %>% filter(region == studyReg & pf == 'Spora.')
+  coefS <- mean(waterS$count)/mean(waterS$area)
+  p3 <- ggplot(waterS, aes(x = year)) +
+    #geom_smooth(aes(y = area), span = .2, color = areaCol) +
+    #geom_smooth(aes(y = count/coefD), span = .2, color = countCol) + 
+    geom_line(aes(y = area), color = areaCol) +
+    geom_line(aes(y = count/coefS), color = countCol) + 
+    scale_y_continuous(
+    name = "Area (sq km)",
+    sec.axis = sec_axis(~.*coefD, name="Lake Count")) +
+    labs(subtitle = 'Sporadic') +
+    theme_bw() +
+    theme(
+    axis.text.y = element_text(color = areaCol),
+    axis.text.y.right = element_text(color = countCol),
+    axis.title.y = element_blank(),
+    axis.title.y.right = element_blank(),
+    axis.title.x = element_blank())
+    
+  gridExtra::grid.arrange(p1,p2,p3, nrow = 1, top = studyReg)
+}
+ 
+p1 <- plotter('Alaska')
+p2 <- plotter("Mackenzie") 
+p3 <- plotter("North America West")
+p4 <- plotter('North America East')
+p5 <- plotter( "Siberia West")
+p6 <- plotter("Siberia East")
+
+g <- gridExtra::grid.arrange(p1, p2, p3, p4, p5, p6, nrow = 6)
+ggsave('figures/AreaCountsRegional.png', plot = g, width = 6.5, height = 7, units = 'in')
+
+
+rm(p1,p2,p3,p4,p5,p6)
+
+
+## look at the climate variables
+ggplot(lakes.summ %>% filter(!is.na(pf)), aes(x = year)) +
+  geom_line(aes(y = ta, color = 'Temp Annual')) + 
+  geom_line(aes(y = ts, color = 'Temp Summer')) +
+  facet_grid(region~pf, scales = 'free') +
+  theme_bw()
+
+ggplot(lakes.summ %>% filter(!is.na(pf)), aes(x = year)) +
+  geom_line(aes(y = pa, color = 'Precip Annual')) + 
+  geom_line(aes(y = ps, color = 'Precip Summer')) +
+  facet_grid(region~pf, scales = 'free') +
+  theme_bw()
+
+clim.plotter <- function(v1, v2){
+  ggplot(lakes.summ %>% filter(!is.na(pf)), aes_string(x = v1, y = v2)) +
+    geom_point() +
+    geom_smooth(method = 'lm') +
+    ggpmisc:: stat_poly_eq(formula = y~x, 
+              aes(label = paste(..rr.label.., sep = "~~~")), 
+              parse = TRUE) +
+    facet_grid(region~pf, scales = 'free')
+}
+
+clim.plotter('ts','count')
+
+ggplot(lakes.summ %>% filter(!is.na(pf)), aes(x = pa, y = ps)) +
+  geom_point() +
+  facet_grid(region~pf)
+
+acfs <- lakes.summ %>% filter(!is.na(pf)) %>% arrange(year) %>%
+  group_by(region, pf) %>%
+  nest() %>%
+  mutate(acf = purrr:::map(data, ~ccf(x = .$area, y = .$ts, plot = F, lag.max = 5)),
+         lag = purrr::map(acf, ~as.numeric(.$lag)),
+         acf = purrr::map(acf, ~as.numeric(.$acf)))%>%
+  select(-data) %>%
+  unnest(cols = c(acf, lag)) %>%
+  filter(lag > -1)
+
+ggplot(acfs, aes(x = lag, y = acf)) +
+  geom_bar(stat = 'identity')+
+  facet_grid(region~pf)
+
+
+```
+
+## Look at some trends
+
+```{r}
+trends <- lakes.summ %>% filter(!is.na(pf)) %>%
+  arrange(year) %>%
+  group_by(region, pf, size) %>%
+  nest() %>%
+  mutate(sens.area = purrr::map(data, ~trend::sens.slope(.$area)),
+         slope.area = map_dbl(sens.area, 'estimates'),
+         p_area = map_dbl(sens.area, 'p.value'),
+         sens.count = purrr::map(data, ~trend::sens.slope(.$count)),
+         slope.count = map_dbl(sens.count, 'estimates'),
+         p_count = map_dbl(sens.count, 'p.value')) %>%
+  select(-c(data, sens.area, sens.count))
+
+trends <- trends %>% 
+  select(-p_count, -p_area, area = slope.area, count = slope.count) %>%
+  pivot_longer(c(area, count), names_to = 'Metric', values_to = 'Slope') %>%
+  left_join(
+    trends %>% select(-slope.area, -slope.count, area = p_area, count = p_count) %>%
+  pivot_longer(c(area, count), names_to = 'Metric', values_to = 'p.value')
+  ) %>%
+  mutate(sig = ifelse(p.value < 0.05, T,F))
+
+ggplot(trends, aes(x = region, y = Slope, fill = pf, alpha = sig)) +
+  geom_col(position = 'dodge') +
+  scale_y_continuous(trans = 'log10') +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust =1)) +
+  facet_wrap(~Metric, scales = 'free')
+
+ggplot(trends, aes(x = pf, y = Slope, fill = Metric, alpha = sig)) +
+  geom_col(position = 'dodge') + 
+  labs(x = 'PF Type', title = 'Sen Slopes', alpha = 'Sig. (95%)') +
+  #scale_y_continuous(trans = 'log10') +
+  facet_grid(region~size, scales = 'free')
+
+```
+
+```{r}
+mean.area <- lakes %>% group_by(year, region, pf) %>%
+  summarise(area = median(area)) %>%
+  na.omit()
+
+ggplot(mean.area, aes(x = year, y = area, color = pf)) + 
+  geom_line() + labs(x = 'Mean lake area') + facet_wrap(~region, scales = 'free')
+```
+
+
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
