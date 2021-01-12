@@ -26,9 +26,11 @@ This is an R Markdown document. Markdown is a simple formatting syntax for autho
 When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
 ```{r cars}
-lakes <- read_csv('data/out/Lakes_UCLA.csv') %>%
+# Pickens dataset 'data/out/ArcticLakes_UCLA_Pickens.csv'
+# Peckel dataset 'data/out/Lakes_UCLA.csv')'
+lakes <- read_csv('data/out/ArcticLakes_UCLA_Pickens.csv') %>%
   select(ID = label, pf = pf_first, sampID = first, year = year_first, 
-         area = area_sum, tempS = temp_first, precipS = precip_first, lith = lith_first, .geo) %>%
+         area = area_sum, tempS = temp_mean, precipS = precip_mean, lith = lith_first, .geo) %>%
   mutate(area = round(area/1e6,5),
          precipS = round(precipS,3),
          tempS = round(tempS,3),
@@ -45,7 +47,7 @@ lakes <- lakes %>%
          lat = as.numeric(lat)) %>%
   select(-text)
 
-write_feather(lakes, 'data/out/lakes_UCLA_munged.feather')
+write_feather(lakes, 'data/out/lakes_UCLA_munged_Pickens.feather')
 lakes <- read_feather("data/out/lakes_UCLA_munged.feather")
 ```
 
@@ -53,9 +55,6 @@ lakes <- read_feather("data/out/lakes_UCLA_munged.feather")
 
 You can also embed plots, for example:
 ```{r pressure, echo=FALSE}
-lakes <- read_feather('data/out/lakes_90mClim_munged.feather') %>%
-  filter(area < 25)
-
 ggplot(lakes, aes(x = area)) + geom_histogram() + scale_x_continuous(trans = 'log10') +
   facet_wrap(~region, scales = 'free')
 
@@ -558,6 +557,7 @@ lakeChar <- lakes %>%
 
 check <- lakeChar %>% group_by(ID) %>% summarise(count = n()) %>% filter(count > 1)
 check2 <- lakeChar %>% filter(ID %in% check$ID)
+
 ## Basically we have 180 lakes where the Lith varies, makes sense since we did lithography at the lake level and pf at the sample area level. Not a big deal, maybe just remove them later.
 
 check <- lakes %>% group_by(ID) %>%
@@ -578,12 +578,12 @@ lakeTrends <- lakes %>%
   select(-data,-mk)
 
 ## Just take the first lith for the 180 wher we have duplicates (kinda arbitrary, maybe reconsider later)
-write_feather(lakeTrends, 'data/out/UCLATrends_Area_Precip_Temp.feather')
+write_feather(lakeTrends, 'data/out/UCLATrends_Area_Precip_Temp_Pickens.feather')
 
 lakeTrends <- lakeTrends %>% left_join(lakeChar %>% arrange(lith) %>% distinct())
 lakeTrends <- lakeTrends %>% mutate(change = ifelse(tau > 0 & p.value < 0.01, 'Increasing',
                                                     ifelse(tau < 0 & p.value < 0.01, 'Decreasing', 'No Change')),
-                                    change = ifelse(is.nan(change, 'No Change', change)))
+                                    change = ifelse(is.na(change), 'No Change', change))
 
 lakeTrends %>% filter(name == 'area') %>%
   ggplot(aes(x = pf, fill = change)) + geom_bar(position = 'dodge') + 
@@ -626,12 +626,13 @@ SampSummaries <- lakeTrends %>% ungroup() %>%
 samps.sf <- st_read('data/out/grid_samp/ArcticGridSamp.shp') %>%
   select(sampID = SampID)
 
-sampCharSF <- samps.sf %>% inner_join(lakeChar %>% ungroup() %>% distinct(sampID, .keep_all = T))
+sampCharSF <- samps.sf %>% inner_join(lakeChar %>% ungroup() %>% distinct(sampID, .keep_all = T)) %>% st_as_sf()
 
 sampSummSF <- sampCharSF %>% inner_join(SampSummaries) %>%
   left_join(lakeCounts %>% st_set_geometry(NULL) %>%
               filter(name == 'count') %>% ungroup() %>%
               select(sampID, countTrend = trends)) #%>% st_centroid()
+
 sampSummSF <- sampSummSF %>% filter(total > 3) %>% 
   mutate(p.increasing = ifelse(p.increasing < .2, NA, p.increasing),
          p.decreasing = ifelse(p.decreasing < .2, NA, p.decreasing))
@@ -648,7 +649,7 @@ ggplot(arctic) +
 
 ggplot(arctic) +
   geom_sf() +
-  geom_sf(data = sampSummSF, aes(fill = p.increasing, color = p.increasing), size = .3) +
+  geom_sf(data = sampSummSF, aes(fill = p.decreasing, color = p.decreasing), size = .3) +
   scale_fill_viridis_c(na.value = 'transparent') +
   scale_color_viridis_c(na.value = 'transparent') +
   theme(legend.position = 'top')
@@ -757,13 +758,11 @@ p2 <- ggplot(lakeCounts, aes(x = trends, fill = trends)) + geom_bar() +
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
         legend.position = 'none')
 
-
-
 p1 <- ggplot(arctic) +
   geom_sf() +
   geom_sf(data = lakeCounts, aes(fill = trends, color =trends), size = .3) +
-  #scale_fill_viridis_d() +
-  #scale_color_viridis_d() +
+  scale_fill_viridis_d() +
+  scale_color_viridis_d() +
   facet_wrap(~name) +
   theme(legend.position = 'top')
 
