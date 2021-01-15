@@ -19,8 +19,7 @@ library(tictoc)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Including Plots
-## Lets try this all again but with a sample grid
+## Make the sample grid
 
 ```{r}
 #### Make the sample grid
@@ -71,8 +70,8 @@ mapview(check, zcol = 'pf')
 ```{r cars}
 # Pickens dataset 'data/out/Lakes_UCLA_Pick50.csv'
 # Peckel dataset 'data/out/Lakes_UCLA.csv')'
-lakes <- read_csv('data/out/Lakes_UCLA_Pick50.csv') %>%  
-  select(ID = label, pf = pf_first, sampID = first, year = year_first, 
+lakes <- read_csv('data/out/Lakes_UCLA.csv') %>%  
+lakes <- lakes %>%  select(ID = label, pf = pf_first, sampID = first, year = year_first, 
          area = area_sum, tempS = temp_median, precipS = precip_median, lith = lith_first, hybasID = HybasID_first, .geo) %>%
   mutate(area = round(area/1e6,5),
          precipS = round(precipS,3),
@@ -90,12 +89,13 @@ lakes <- lakes %>%
          lat = as.numeric(lat)) %>%
   select(-text)
 
-write_feather(lakes, 'data/out/lakes_UCLA_munged.feather')
+write_feather(check, 'data/out/lakes_UCLA_munged.feather')
 lakes <- read_feather("data/out/lakes_UCLA_munged.feather")
 ```
 
 ## UCLA Exploration
 ```{r}
+#lakes <- read_feather("data/out/lakes_UCLA_munged_Pickens.feather")
 lakes <- read_feather("data/out/lakes_UCLA_munged.feather")
 
 ## Create a lake characteristic variable to attach to lakes later on
@@ -128,7 +128,6 @@ lakeTrends <- lakes %>%
   select(-data,-mk)
 
 ## Just take the first lith for the 180 wher we have duplicates (kinda arbitrary, maybe reconsider later)
-
 lakeTrends <- lakeTrends %>% left_join(lakeChar %>% arrange(lith) %>% distinct())
 lakeTrends <- lakeTrends %>% mutate(change = ifelse(tau > 0 & p.value < 0.01, 'Increasing',
                                                     ifelse(tau < 0 & p.value < 0.01, 'Decreasing', 'No Change')),
@@ -138,7 +137,7 @@ write_feather(lakeTrends, 'data/out/UCLATrends_Area_Precip_Temp_Pickens.feather'
 lakeTrends <- read_feather('data/out/UCLATrends_Area_Precip_Temp.feather')
 
 SampSummaries <- lakeTrends %>% ungroup() %>%
-  #filter(name == 'area') %>%
+  filter(name == 'area') %>%
   group_by(sampID, name) %>%
   summarise(total = n(),
             increasing = sum(change == 'Increasing', na.rm = T),
@@ -178,252 +177,216 @@ p3 <- ggplot(arctic) +
 
 gridExtra::grid.arrange(p1,p2,p3, nrow = 1)
 
-ggplot
+## Real quick, just look at change in lake numbers by year
 
-sampSummSF <- sampCharSF %>% 
-  inner_join(lakeChar %>% ungroup() %>% distinct(sampID, .keep_all = T)) %>%
-  left_join(SampSummaries %>% st_set_geometry(NULL) %>%
-              filter(name == 'count') %>% ungroup() %>%
-              select(sampID, countTrend = trends)) #%>% st_centroid()
-
-sampSummSF <- sampSummSF %>% filter(total > 3) %>% 
-  mutate(p.increasing = ifelse(p.increasing < .2, NA, p.increasing),
-         p.decreasing = ifelse(p.decreasing < .2, NA, p.decreasing))
-
-
-ggplot(arctic) +
-  geom_sf() +
-  geom_sf(data = sampSummSF, aes(fill = total, color = total), size = .3) +
-  scale_fill_viridis_c(trans = 'log10') +
-  scale_color_viridis_c(trans = 'log10') +
-  theme(legend.position = 'top')
-
-ggplot(arctic) +
-  geom_sf() +
-  geom_sf(data = sampSummSF, aes(fill = p.decreasing, color = p.decreasing), size = .3) +
-  scale_fill_viridis_c(na.value = 'transparent') +
-  scale_color_viridis_c(na.value = 'transparent') +
-  theme(legend.position = 'top')
-
-
-
-
-
-lakeTrends %>% filter(name == 'area') %>%
-  ggplot(aes(x = pf, fill = change)) + geom_bar(position = 'dodge') + 
-  scale_y_log10()
-
-lithLabeler <- tibble(lith = c(1:16), lith_lab = c("unconsolidated sediment", "basic volcanic", "siliciclastic sedimentary", "basic plutonic", "mixed sedimentary", "carbonate sedimentary", "acid volcanic", "metamorphics", "acid plutonic", "intermediate volcanic", "water bodies", "pyroclastics", "intermediate plutonic", "evaporites", "no data", "ice and glaciers")) 
-
-lakeTrends %>% filter(name == 'area') %>% 
-  left_join(lithLabeler) %>%
-  ggplot(aes(x = change, fill = change)) + geom_bar() + scale_y_log10() +
-  facet_wrap(~factor(lith_lab), scales = 'free')
-
-
-check <- lakeTrends %>% select(ID, pf, name, lith, mean_area = area, change) %>%
-  pivot_wider(names_from = name, values_from = change)
-
-table(check$area, check$tempS)
-
-ggplot(check, aes(x = pf, fill = area)) + geom_bar(position = 'dodge') + 
-  scale_y_log10() +
-  facet_wrap(~tempS, scales = 'free')
-
-
-
-
-
-
-
-SampSummaries %>%
-  select(sampID, p.increasing, p.decreasing) %>%
-  pivot_longer(-sampID) %>%
-  ggplot(aes(x = name, y = value, fill = name)) + geom_boxplot() +
-  theme(legend.position = 'none')
-
-## look at sample site characteristics
-## clean up the lithographies real quick
-check <- lakeChar %>% ungroup() %>% distinct(sampID, .keep_all = T) %>%
-  group_by(lith) %>% summarise(count = n()) %>% filter(count > 30)
-
-ggplot(arctic) +
-  geom_sf() +
-  geom_sf(data = sampCharSF %>% filter(lith %in% check$lith) %>%
-            left_join(lithLabeler), 
-          aes(color = lith_lab, fill = lith_lab)) +
-  scale_fill_viridis_d(option = 'plasma') +
-  scale_color_viridis_d(option = 'plasma')
-
-ggplot(arctic) +
-  geom_sf() +
-  geom_sf(data = sampCharSF, 
-          aes(color = pf, fill = pf)) +
-  scale_fill_viridis_d(option = 'plasma') +
-  scale_color_viridis_d(option = 'plasma')
-
-sampSummSF %>% st_set_geometry(NULL) %>%
-  select(sampID, pf, p.increasing, p.decreasing) %>%
-  pivot_longer(-c(sampID, pf)) %>%
-  ggplot(aes(x = pf, y = value, color = name)) +
-  geom_boxplot()
-
-sampSummSF %>% st_set_geometry(NULL) %>% left_join(lithLabeler) %>%
-  filter(lith %in% check$lith) %>%
-  select(sampID, lith_lab, p.increasing, p.decreasing) %>%
-  pivot_longer(-c(sampID, lith_lab)) %>%
-  ggplot(aes(x = lith_lab, y = value, color = name)) +
-  geom_boxplot() +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust =1))
-
-  
-library(leafgl)
-library(leaflet)
-
-cols = colour_values_rgb(sampSummSF$p.increasing, include_alpha = FALSE) / 255
-m1 <- leaflet() %>%
-  addProviderTiles(provider = providers$CartoDB.DarkMatter) %>%
-  addGlPoints(data = sampSummSF %>% st_transform(4326), fillColor = cols, group = "pts") 
-
-cols = colour_values_rgb(sampSummSF$p.decreasing, include_alpha = FALSE) / 255
-m2 <- leaflet() %>%
-  addProviderTiles(provider = providers$CartoDB.DarkMatter) %>%
-  addGlPoints(data = sampSummSF %>% st_transform(4326), fillColor = cols, group = "pts") 
-
-#leaflet() %>% addProvqTiles() %>% addGlPoints(data = sampSummSF, group = 'pts')
-#  mapview(sampSummSF, zcol = 'p.increasing')
-#m2 <- mapview(sampSummSF, zcol = 'p.decreasing')
-m3 <- mapview(sampCharSF, zcol = 'pf')
-m4 <- mapview(sampCharSF, zcol = 'lith')
-
-leafsync::sync(m1,m2,m3,m4)
-
-
-## Look at the number of lakes in each sample site each year
-lakeCounts <- lakes %>%
-  select(ID, year, sampID, tempS, precipS) %>%
-  group_by(sampID, year) %>%
-  summarise(count = n(),
-            precip = mean(precipS, na.rm = T),
-            temp = mean(tempS, na.rm = T))
-
-ggplot(lakeCounts, aes(x = factor(year), y = count)) + geom_boxplot() + scale_y_log10()
-ggplot(lakeCounts, aes(x = factor(year), y = precip)) + geom_boxplot() + scale_y_log10()
-ggplot(lakeCounts, aes(x = factor(year), y = temp)) + geom_boxplot() + scale_y_log10()
-
-check <- lakeCounts %>%
-  group_by(sampID) %>% summarise(count = n()) %>%
-  filter(count > 3)
-
-lakeCounts <- lakeCounts %>%
-  filter(sampID %in% check$sampID) %>%
-  pivot_longer(-c(sampID,year)) %>%
-  arrange(sampID,year) %>%
-  group_by(sampID, name) %>%
-  nest() %>%
-  mutate(mk = purrr::map(data, ~trend::mk.test(.$value)),
-         tau = purrr::map(mk, 'estimates'),
-         tau = purrr::map_dbl(tau, 'tau'),
-         p.value = map_dbl(mk, 'p.value')) %>%
-  select(-data,-mk)
-
-lakeCounts <- lakeCounts %>%
-  mutate(trends = ifelse(tau > 0 & p.value < 0.01, 'Increasing',
-                             ifelse(tau < 0 & p.value < 0.01, 'Decreasing','No Change')),
-         trends = ifelse(is.na(trends), 'No Change', trends)) %>%
-  inner_join(samps.sf) %>% st_as_sf()
-
-p2 <- ggplot(lakeCounts, aes(x = trends, fill = trends)) + geom_bar() +
-  scale_fill_viridis_d() +
-  facet_wrap(~name, scales = 'free') +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
-        legend.position = 'none')
-
-p1 <- ggplot(arctic) +
-  geom_sf() +
-  geom_sf(data = lakeCounts, aes(fill = trends, color =trends), size = .3) +
-  scale_fill_viridis_d() +
-  scale_color_viridis_d() +
-  facet_wrap(~name) +
-  theme(legend.position = 'top')
-
-gridExtra::grid.arrange(p1,p2, nrow = 2, heights = c(1,.7))
-
-
-leafsync::sync(mapview(lakeCounts, zcol = 'lakeCounts'), m3,m4, leaflet() %>% addProviderTiles('Esri.WorldImagery'))  
+lakes %>% 
+  left_join(foreign::read.dbf('data/in/Shapes/BasinATLAS_v10_lev09.dbf') %>%
+    rename(hybasID = HYBAS_ID)) %>%
+  group_by(year, tec_cl_sva) %>% 
+  summarise(count = n()) %>%
+  ggplot(aes(x = year, y = count)) + geom_line() +
+  facet_wrap(~tec_cl_sva)
 
 ```
 
+## Lets look at the slopes of precip and temp and see if they match Katherine Kuhns
 
 ```{r}
-lakes.summ <- lakes %>% 
-  group_by(sampID, year, pf) %>%
-  summarise(area = sum(area),
-         count = n(),
-         area.avg = mean(area, na.rm = T))
+## the temps pulled in 
+lakes <- read_feather("data/out/lakes_UCLA_munged.feather") %>%
+  select(sampID, year, area, tempS, precipS)
 
-check <- lakes.summ %>%
+sampMeans <- lakes %>% group_by(sampID,year) %>%
+  summarise(yr_area = sum(area)) %>%
   group_by(sampID) %>%
-  summarise(count = n()) %>%
-  filter(count > 15)
+  summarise(mn_annual_area = mean(yr_area)) %>%
+  ungroup()
 
-sampTrends <- lakes.summ %>%
-  filter(sampID %in% check$sampID) %>%
-  pivot_longer(c('area', 'count')) %>%
-  arrange(year) %>%
-  group_by(sampID, name,pf) %>%
-  nest(.) %>%
-  mutate(sens.area = purrr::map(data, ~trend::sens.slope(.$value)),
-         slope = map_dbl(sens.area, 'estimates'),
-         p.value = map_dbl(sens.area, 'p.value')) %>%
-  select(-data,-sens.area)
+tp <- lakes %>% group_by(sampID, year) %>%
+  summarise(count = n(),
+            temp = median(tempS),
+            precip = median(precipS),
+            area = sum(area)) %>%
+  left_join(sampMeans) %>%
+  mutate(frac_area = area/mn_annual_area) %>%
+  select(-mn_annual_area)
 
-sampTrends <- lakes.summ %>%
-  filter(sampID %in% check$sampID) %>%
-  pivot_longer(c('area', 'count', 'area.avg')) %>%
-  arrange(year) %>%
-  group_by(sampID, name, pf) %>%
-  nest(.) %>%
-  mutate(sens.area = purrr::map(data, ~trend::mk.test(.$value)),
-         slope = purrr::map(sens.area, 'estimates'),
-         slope = purrr::map_dbl(slope, 'tau'),
-         p.value = map_dbl(sens.area, 'p.value')) %>%
-  select(-data,-sens.area)
+filt <- tp %>% group_by(sampID) %>% summarise(count = n()) %>%
+  filter(count > 10)
 
-getmode <- function(v) {
-   uniqv <- unique(v)
-   uniqv[which.max(tabulate(match(v, uniqv)))]
-}
-
-modeLith <- lakes %>% group_by(sampID) %>%
-  summarise(lith = getmode(lith))
-lithLabeler <- tibble(lith = c(1:16), lith_lab = c("unconsolidated sediment", "basic volcanic rocks", "siliciclastic sedimentary rocks", "basic plutonic rocks", "mixed sedimentary rocks", "carbonate sedimentary rocks", "acid volcanic rocks", "metamorphics", "acid plutonic rocks", "intermediate volcanic rocks", "water bodies", "pyroclastics", "intermediate plutonic rocks", "evaporites", "no data", "ice and glaciers")) 
-
-sampTrends <- sampTrends %>% left_join(modeLith)
-  
-sampTrends <- sampTrends %>% mutate(tDir = ifelse(slope > 0, 'increasing', ifelse(slope < 0, 'decreasing', ifelse(p.value > 0.05, 'NoChange', NA))))
-
-
-sampTrends %>% na.omit() %>%
-  ggplot(aes(x = name, fill = tDir)) + geom_bar(position = 'dodge') +
-  facet_wrap(~pf, scales = 'free')
-
+tp <- tp %>% arrange(sampID, year) %>%
+  filter(sampID %in% filt$sampID, year != 2019) %>%
+  pivot_longer(-c(sampID,year)) %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, name) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
 
 samps.sf <- st_read('data/out/grid_samp/ArcticGridSamp.shp') %>%
-  select(SampID) %>%
-  right_join(sampTrends, by = c('SampID' = 'sampID'))
+  select(sampID = SampID)
 
-ggplot() +
-  basemap(limits = 60)
+arctic <- st_as_sf(maps::map("world", plot = FALSE, fill = TRUE, ylim = c(60,90))) %>%
+  st_transform(st_crs(samps.sf))
+var = 'area'
 
-samps.sf %>%
-  ggplot(aes(y = slope, x = pf)) +
-  geom_violin(draw_quantiles = .5) +
-  ylim(-.05,.05) +
-  facet_wrap(~name)
+plotter <- function(var){
+  tp %>%
+    filter(name == var) %>%
+    mutate(slope = ifelse(slope > 0.01, 0.01, ifelse(slope < -0.01, -0.01, slope))) %>%
+    left_join(samps.sf) %>%
+    st_as_sf() %>%
+    #st_centroid() %>%
+    ggplot() +
+      geom_sf(data = arctic) +
+      geom_sf(aes(color = slope, fill = slope)) +
+    labs(title = var)
+}
 
-mapview(samps.sf %>% filter(name == 'count', p.value < 0.05) %>% 
-          mutate(slope.dir = ifelse(slope > 0, 'increasing', ifelse(slope < 0, 'decreasing', NA))) %>% st_centroid(), zcol = 'slope.dir')
+plotter('temp') + scale_fill_gradient2(low = 'blue', mid = 'grey80', high = 'red') +
+  scale_color_gradient2(low = 'blue', mid = 'grey80', high = 'red')
+plotter('precip')+ scale_fill_gradient2(high = 'blue', mid = 'grey80', low = 'red') +
+  scale_color_gradient2(high = 'blue', mid = 'grey80', low = 'red')
+
+plotter('area') + 
+  scale_color_gradient2(mid = 'grey80', 
+                        breaks = c(-0.05,-0.025, 0, 0.025,0.05), 
+                        labels = c('<-0.05', -0.025, 0, 0.025, '>0.05')) +
+      scale_fill_gradient2(mid = 'grey80', 
+                           breaks = c(-0.05,-0.025, 0, 0.025,0.05), 
+                           labels = c('<-0.05', -0.025, 0, 0.025, '>0.05'))
+
+plotter('frac_area') + scale_color_gradient2(mid = 'grey80') +#, 
+                       # breaks = c(-0.05,-0.025, 0, 0.025,0.05), 
+                       # labels = c('<-0.05', -0.025, 0, 0.025, '>0.05')) +
+      scale_fill_gradient2(mid = 'grey80')#, 
+                           #breaks = c(-0.05,-0.025, 0, 0.025,0.05), 
+                           #labels = c('<-0.05', -0.025, 0, 0.025, '>0.05'))
+
+## This causes memory issues
+yearlyBiomes <- read_feather("data/out/lakes_UCLA_munged.feather")  %>%
+  left_join(foreign::read.dbf('data/in/Shapes/BasinATLAS_v10_lev09.dbf') %>%
+    select(hybasID = HYBAS_ID, biome = tbi_cl_smj)) %>%
+  group_by(biome, year) %>%
+  summarise(count = n(),
+            area = sum(area),
+            temp = mean(tempS),
+            precip = mean(precipS))
+
+ggplot(yearlyBiomes %>% filter(!is.na(biome)), aes(x = year, y = area)) + geom_line() + 
+  facet_wrap(~biome, scales = 'free') 
+
+
+yearlyBiomes %>% filter(!is.na(biome)) %>%
+  pivot_longer(-c(biome,year)) %>%
+  group_by(biome,name) %>%
+  mutate(value = scale(value)[,1]) %>%
+  ungroup() %>%
+  filter(name != 'count') %>%
+  ggplot(aes(x = year, y = value, color = name)) +
+  geom_line() +
+  facet_wrap(~biome, scales = 'free')
+
+ggplot(yearlyBiomes %>% filter(!is.na(biome)), aes(x = year, y = temp)) + geom_line() + 
+  facet_wrap(~biome, scales = 'free') 
+```
+
+
+## tie the above to sample-characteristic in hydroAtlas
+
+
+```{r}
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))][1]
+}
+
+sampChar <- read_feather("data/out/lakes_UCLA_munged.feather") %>%
+  select(sampID, hybasID) %>%
+  group_by(sampID) %>%
+  summarise(hybasID = getmode(hybasID))
+
+sampChar <- sampChar %>% left_join(
+  foreign::read.dbf('data/in/Shapes/BasinATLAS_v10_lev09.dbf') %>%
+    rename(hybasID = HYBAS_ID))
+  
+
+plotter <- function(att1, att2){
+  sampChar %>%
+    #right_join(tp %>% filter(name == 'frac_area')) %>%
+    right_join(tp %>%
+      select(-p.value) %>%
+      pivot_wider(values_from = slope, names_from = name)) %>%
+    select(sampID, frac_area, var1 = att1, var2 = att2) %>%
+    mutate(quintiles1 = cut_number(var1,4),
+           quintiles2 = cut_number(var2,4)) %>%
+    filter(!is.na(var1)) %>%
+    ggplot(aes(x = quintiles1, y = frac_area)) + 
+    geom_violin() +
+    geom_boxplot(width = .1) +
+    coord_cartesian(ylim = c(-0.01,0.01)) +
+    facet_wrap(~quintiles2) +
+    labs(x = att1)
+}
+plotter('gwt_cm_sav','slt_pc_sav')
+
+
+plotter <- function(att){
+  sampChar %>%
+    #right_join(tp %>% filter(name == 'frac_area')) %>%
+    right_join(tp %>%
+      select(-p.value) %>%
+      pivot_wider(values_from = slope, names_from = name)) %>%
+    select(sampID, frac_area, var = att) %>%
+    mutate(quintiles1 = cut_interval(var,8)) %>%
+    filter(!is.na(var)) %>%
+    ggplot(aes(x = quintiles1, y = frac_area)) + 
+    geom_violin() +
+    geom_boxplot(width = .1) +
+    coord_cartesian(ylim = c(-0.01,0.01)) +
+    labs(x = att)
+}
+
+plotter('prm_pc_sse')
+##Good ones, gwt_cm_sav, area, "prm_pc_sse" isn't too bad (only 4 groups though), 'slt_pc_sav', 'snd_pc_sav', 
+```
+
+## Look at appearing and disapearing lakes
+
+```{r}
+lakeDis <- read_feather("data/out/lakes_UCLA_munged.feather") %>%
+  mutate(period = ifelse(year < 2010, 'y00-09','y10-19')) %>%
+  group_by(ID, period) %>%
+  summarise(count = n()) %>%
+  pivot_wider(values_from = count, names_from = period) 
+
+lakeDis[is.na(lakeDis)] = 0
+
+lakeDis <- lakeDis %>%
+  mutate(stats = ifelse(`y00-09` > 5 & `y10-19` < 5, 'Diss',
+                        ifelse(`y00-09` < 5 & `y10-19` > 5, 'Emerged',
+                               ifelse(`y00-09` < 5 & `y10-19` < 5,
+                                      'Unstable',"Stable"))))
+
+lakeDis <- lakeDis %>%
+  inner_join(read_feather("data/out/lakes_UCLA_munged.feather") %>%
+                       distinct(ID, sampID, hybasID)) %>%
+  inner_join(foreign::read.dbf('data/in/Shapes/BasinATLAS_v10_lev09.dbf') %>%
+               rename(hybasID = HYBAS_ID))
+
+plotter <- function(att){
+  lakeDis %>%
+    ungroup() %>%
+    select(ID, stats, var = att) %>%
+    mutate(quintiles = cut_interval(var,10)) %>%
+    ggplot(aes(x = quintiles)) + geom_bar(position = 'dodge') +
+    facet_wrap(~stats, scales = 'free') +
+    scale_y_log10()
+}
+
+plotter('pct__sse')
 ```
 
 
