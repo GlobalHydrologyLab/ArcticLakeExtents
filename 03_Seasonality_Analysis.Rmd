@@ -1,0 +1,95 @@
+---
+title: "03_SeasonalityAnalysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Pull sample areas with decreasing areas to look at seasonality
+
+```{r}
+set.seed(8464)
+neg.seasonal <- tp %>% filter(name == 'frac_area', 
+                              slope < 0, 
+                              p.value < 0.1,
+                              Threshold == 'area70') %>%
+  ungroup() %>%
+  slice_sample(n = 100)
+
+neg.seasonal %>% inner_join(samps.sf) %>% st_as_sf() %>% mapview()
+
+## put um into EE
+paste(neg.seasonal$sampID, collapse = ', ')
+
+set.seed(8464)
+pos.seasonal <- tp %>% filter(name == 'frac_area', 
+                              slope > 0, 
+                              p.value < 0.1,
+                              Threshold == 'area70') %>%
+  ungroup() %>%
+  slice_sample(n = 100)
+
+pos.seasonal %>% inner_join(samps.sf) %>% st_as_sf() %>% mapview()
+
+## put um into EE
+paste(pos.seasonal$sampID, collapse = ', ')
+
+```
+
+```{r}
+Clim <- read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year.csv') %>%
+  select(area = sum,precip =  PrecipE_mean ,temp = TempE_mean, 
+         sampID = SampID, month) %>%
+  pivot_longer(-c(sampID, month)) %>%
+  mutate(period = '2000-2006') %>%
+  full_join(
+    read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year.csv') %>%
+     select(area = Latesum,precip =  PrecipL_mean ,temp = TempL_mean, 
+           sampID = SampID, month) %>%
+      pivot_longer(-c(sampID, month)) %>%
+      mutate(period = '2014-2019')
+  ) %>% mutate(trend = 'Positive')
+  
+Clim <- Clim %>%
+  bind_rows(
+    read_csv('data/out/AW_GEE_Exports/AreaLossClimatologies6year.csv') %>%
+      select(area = sum, precip =  PrecipE_mean ,temp = TempE_mean, 
+             sampID = SampID, month) %>%
+      pivot_longer(-c(sampID, month)) %>%
+      mutate(period = '2000-2006') %>%
+      full_join(
+        read_csv('data/out/AW_GEE_Exports/AreaLossClimatologies6year.csv') %>%
+         select(area = Latesum,precip =  PrecipL_mean ,temp = TempL_mean, 
+               sampID = SampID, month) %>%
+          pivot_longer(-c(sampID, month)) %>%
+          mutate(period = '2014-2019')) %>% 
+          mutate(trend = 'Negative'))
+  
+climScaled <- Clim %>%
+  filter(value != 0, !month %in% c(5,10)) %>%
+  group_by(sampID, name) %>%
+  mutate(value = scale(value)) %>%
+  ungroup()
+
+ggplot(climScaled, aes(x = month, y = value, color = period)) +
+  geom_jitter(alpha = .05) +
+  geom_smooth() +
+  scale_colour_viridis_d(end = .5) +
+  facet_grid(name~trend, scales = 'free') +
+  theme_bw()
+
+ggsave('figures/Seasonality.png', width = 6, height = 4, units = 'in')
+
+climScaled %>%
+  group_by(name, month, trend, period) %>%
+  summarise(med = median(value, na.rm = T),
+            quart1 = quantile(value, .25, na.rm =T),
+            quart3 = quantile(value, .75,na.rm =T)) %>%
+  ggplot(aes(x = month)) +
+  geom_point(aes(y = med, color = period)) +
+  geom_errorbar(aes(ymin = quart1, ymax = quart3, color = period)) +
+  facet_grid(name~trend, scales = 'free')
+
+```

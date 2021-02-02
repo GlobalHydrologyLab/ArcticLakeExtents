@@ -1,0 +1,259 @@
+---
+title: "02_UCLA_LakeAnalysis"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: console
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(mapview)
+library(sf)
+library(feather)
+library(furrr)
+library(trend)
+library(tictoc)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Look at sample site fractional changes in water area
+
+```{r}
+lakes <- read_feather('data/out/Pick_Munged_Full.feather')
+
+sampMeans <- lakes %>% group_by(sampID,year) %>%
+  summarise_at(vars(area20,area50,area70),sum, na.rm = T) %>%
+  group_by(sampID) %>%
+  summarise_at(vars(area20,area50,area70),  mean, na.rm = T) %>%
+  ungroup() %>%
+  pivot_longer(-sampID, names_to = 'Threshold', values_to = 'Mean_Area')
+
+tp <- lakes %>% select(sampID, year, area20,area50,area70) %>%
+  pivot_longer(-c(sampID,year), names_to = 'Threshold', values_to = 'area') %>%
+  na.omit() %>%
+  group_by(sampID, year, Threshold) %>%
+  summarise(count = n(),
+            area = sum(area)) %>%
+  left_join(sampMeans) %>%
+  mutate(frac_area = area/Mean_Area) %>%
+  select(-Mean_Area)
+
+filt <- tp %>% group_by(sampID, Threshold) %>% summarise(count = n()) %>%
+  filter(count > 10) %>%
+  mutate(filtID = paste0(Threshold, sampID))
+
+tp <- tp %>%
+  mutate(filtID = paste0(Threshold, sampID)) %>%
+  filter(filtID %in% filt$filtID) %>% select(-filtID) %>%
+  pivot_longer(-c(sampID,year,Threshold)) %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, name,Threshold) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
+write_feather(tp, 'data/out/Trends_Pick_Full.feather')
+```
+
+# Look at the trends spatially.
+
+```{r}
+#tp <- read_feather('data/out/Trends_Pick_Full.feather')
+
+samps.sf <- st_read('data/out/grid_samp/ArcticGridSamp.shp') %>%
+  select(sampID = SampID)
+
+arctic <- st_as_sf(maps::map("world", plot = FALSE, fill = TRUE, ylim = c(60,90))) %>%
+  st_transform(st_crs(samps.sf))
+
+plotter <- function(var){
+  tp %>%
+    filter(name == var) %>%
+    mutate(slope = ifelse(slope > 0.01, 0.01, ifelse(slope < -0.01, -0.01, slope))) %>%
+    #mutate(slope = ifelse(slope > 0.1, 0.1, ifelse(slope < -0.1, -0.1, slope))) %>%
+    #mutate(slope = ifelse(slope > .5, .5, ifelse(slope < -.5, -.5, slope))) %>%
+    left_join(samps.sf) %>%
+    st_as_sf() %>%
+    ggplot() +
+      geom_sf(data = arctic) +
+      geom_sf(aes(color = slope, fill = slope)) +
+      labs(title = var) +
+      facet_wrap(~Threshold, nrow = 1)
+}
+
+p1 <- plotter('count') + 
+  scale_color_gradient2(mid = 'grey80', 
+                        breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
+                        labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
+      scale_fill_gradient2(mid = 'grey80', 
+                           breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
+                        labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
+  labs(title = expression(Lake~Count~(n~yr^-1 )), 
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'right')
+
+ggsave('figures/countTrends.png', width = 6, height = 2.5, units = 'in')
+
+
+p2 <- plotter('area') + 
+  scale_color_gradient2(mid = 'grey80', 
+                        breaks = c(-0.1,-0.05, 0, 0.05,0.1), 
+                        labels = c('<-0.1', -0.05, 0, 0.05, '>0.1')) +
+      scale_fill_gradient2(mid = 'grey80', 
+                           breaks = c(-0.1,-0.05, 0, 0.05,0.1), 
+                        labels = c('<-0.1', -0.05, 0, 0.05, '>0.1')) +
+  labs(title = expression(Area~Change~(km^2~yr^-1 )), 
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'right')
+
+ggsave('figures/areaTrends.png', width = 6, height = 2.5, units = 'in')
+
+p3 <- plotter('frac_area') + 
+  scale_color_gradient2(mid = 'grey80',  
+                        breaks = c(-0.01,-0.005, 0, 0.005,0.01), 
+                        labels = c('<-1%', "-0.5%", "0%", "0.5%", '>1%')) +
+  scale_fill_gradient2(mid = 'grey80',
+                       breaks = c(-0.01,-0.005, 0, 0.005,0.01), 
+                       labels = c('<-1%', "-0.5%", "0%", "0.5%", '>1%')) +
+  labs(title = expression(Fractional~Change~(percent~yr^-1 )),
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'right')
+
+ggsave('figures/Frac_areaTrends.png', width = 6, height = 2.5, units = 'in')
+
+
+g <- gridExtra::grid.arrange(p1,p2,p3, nrow =3)
+
+ggsave('figures/ChangeNinePanel.png', plot = g, width = 6, height = 6, units = 'in')
+```
+
+## tie the above to sample-characteristic in hydroAtlas
+
+```{r}
+sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Meds.csv') %>%
+  rename(sampID = SampID) %>%
+  rowwise() %>%
+  mutate(clay = mean(c(`clay_0-5cm_mean`, `clay_100-200cm_mean`, `clay_15-30cm_mean`, 
+                       `clay_30-60cm_mean`, `clay_5-15cm_mean`, `clay_60-100cm_mean`), na.rm = T),
+         sand = mean(c(`sand_0-5cm_mean`, `sand_100-200cm_mean`, `sand_15-30cm_mean`, 
+                       `sand_30-60cm_mean`, `sand_5-15cm_mean`, `sand_60-100cm_mean`), na.rm = T),
+         soc = mean(c(`soc_0-5cm_mean`, `soc_100-200cm_mean`, `soc_15-30cm_mean`, 
+                       `soc_30-60cm_mean`, `soc_5-15cm_mean`, `soc_60-100cm_mean`), na.rm = T)) %>%
+  ungroup() %>%
+  select(-c(`clay_0-5cm_mean`:`clay_60-100cm_mean`,
+            `sand_0-5cm_mean`:`sand_60-100cm_mean`,
+            `clay_0-5cm_mean`:`soc_60-100cm_mean`, `system:index`, .geo, BurnArea, BurnYear)) %>%
+  left_join(read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics.csv') %>% select(BurnArea,BurnYear, sampID = SampID))
+  
+
+
+give.n <- function(x){
+  return(c(y = 0.01, label = length(x))) 
+  # experiment with the multiplier to find the perfect position
+}
+
+plotter <- function(att, cuts, pfProbH = 1, pfProbL = 0){
+ sampChar %>%
+    right_join(tp %>% filter(name == 'frac_area')) %>%
+    filter(PFProb >= pfProbL, PFProb <= pfProbH) %>%
+    select(sampID, Threshold, slope, var = att) %>%
+    #mutate(quintiles1 = cut_number(var, 5)) %>%
+    mutate(quintiles1 = cut_interval(var, 6)) %>%
+    #mutate(quintiles1 = cut(var, breaks = cuts, right = F, include.lowest = T)) %>%
+    filter(!is.na(var)) %>%
+    ggplot(aes(x = quintiles1, y = slope)) + 
+    geom_violin() +
+    geom_boxplot(width = .1) +
+    geom_hline(yintercept =  0, color = 'red') +
+    stat_summary(fun.data = give.n, geom = "text", fun = median, hjust = 1.1) +
+    coord_cartesian(ylim = c(-0.01,0.01)) +
+    labs(x = att, y = 'Slope (percent mean area/year)') +
+    facet_wrap(~Threshold, nrow = 1)
+}
+
+plotter('PermP') + labs(title = 'Permeability', x = 'Permeability')
+plotter('Porosity',pfProbL = 0.90)
+plotter('sand', pfProbL = 0.99) + labs(title = 'Sand Soil Content in Continous Permafrost', x = 'Sand (g/kg)')
+plotter('sand', pfProbH = 0.99) + labs(title = 'Sand Soil Content in Discontinous Permafrost', x = 'Sand (g/kg)')
+plotter('PFProb', cuts = c(0,0.005,0.05,0.1,0.50,.99,1)) + labs(title = 'Permafrost Probability', x = 'Permafrost Probablility')
+plotter('BurnArea', cuts = c(0,0.1,0.2,0.5,0.75,1)) + labs(title = 'Percent Area Burned since 2000', x = 'Burn Area (%)')
+plotter('soc')
+##Good ones, gwt_cm_sav, area, "prm_pc_sse" isn't too bad (only 4 groups though), 'slt_pc_sav', 'snd_pc_sav', 'ari_ix_sav
+```
+
+## Look at appearing and disapearing lakes
+
+```{r}
+lakeDis <- read_feather("data/out/lakes_UCLA_munged_Pickens70.feather") %>%
+  mutate(period = ifelse(year < 2010, 'y00-09','y10-19')) %>%
+  group_by(ID, lat,long,period) %>%
+  summarise(count = n()) %>%
+  pivot_wider(values_from = count, names_from = period) 
+
+lakeDis[is.na(lakeDis)] = 0
+
+lakeDis <- lakeDis %>%
+  mutate(stats = ifelse(`y00-09` > 5 & `y10-19` < 5, 'Diss',
+                        ifelse(`y00-09` < 5 & `y10-19` > 5, 'Emerged',
+                               ifelse(`y00-09` < 5 & `y10-19` < 5,
+                                      'Unstable',"Stable"))))
+
+lakeDis <- lakeDis %>%
+  inner_join(read_feather("data/out/lakes_UCLA_munged_Pickens70.feather") %>%
+                       distinct(ID, sampID, hybasID)) %>%
+  inner_join(foreign::read.dbf('data/in/Shapes/BasinATLAS_v10_lev09.dbf') %>%
+               rename(hybasID = HYBAS_ID))
+
+plotter <- function(att){
+  lakeDis %>%
+    ungroup() %>%
+    select(ID, stats, var = att) %>%
+    mutate(quintiles = cut_interval(var,5)) %>%
+    ggplot(aes(x = quintiles)) + geom_bar(position = 'dodge') +
+    facet_wrap(~stats, scales = 'free')
+}
+
+plotter('prm_pc_sse')
+
+lakeDis %>% filter(stats %in% c('Diss','Emerged','Unstable')) %>%
+  left_join(lakeChar) %>%
+  st_as_sf(coords = c('long', 'lat'), crs = 4326) %>%
+  mapview(zcol = 'stats')
+
+sampDis <- lakeDis %>% filter(stats %in% c('Diss','Emerged','Unstable')) %>%
+  left_join(read_feather("data/out/lakes_UCLA_munged_Pickens70.feather")) %>%
+  group_by(sampID) %>%
+  summarise(Diss = sum(stats == 'Diss'),
+            Emerged = sum(stats == 'Emerged'),
+            Unstable = sum(stats == 'Unstable'))
+
+plotter <- function(i){
+  sampDis %>%
+    left_join(samps.sf) %>%
+    st_as_sf() %>%
+    ggplot() +
+      geom_sf(data = arctic) +
+      geom_sf(aes_string(color = i, fill = i)) +
+  scale_fill_viridis_c(direction = -1, trans = 'log10', na.value = 'transparent') +
+  scale_color_viridis_c(direction = -1, trans = 'log10', na.value = 'transparent')
+  }
+p1 <- plotter('Diss')
+p2 <- plotter('Emerged')
+
+gridExtra::grid.arrange(p1,p2, nrow = 1)
+plotter('Unstable')
+
+
+
+```
+
+
