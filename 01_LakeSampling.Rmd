@@ -1,0 +1,109 @@
+---
+title: "Arctic_Lake_Analysis"
+author: "Simon Topp"
+date: "11/23/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(mapview)
+library(sf)
+library(feather)
+library(furrr)
+library(trend)
+library(tictoc)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Make the sample grid
+
+```{r, eval=F, include=F}
+#### Make the sample grid
+library(rnaturalearth)
+land <- ne_countries(scale = 'medium', returnclass = 'sf') %>%
+  st_crop(.,xmin = -180, ymin = 50, xmax = 180, ymax = 84) %>%
+  filter(name_long != 'Iceland', name_long != 'Greenland')
+
+land <- land %>% st_cast('MULTIPOLYGON') %>% st_cast('POLYGON')
+
+points <- tibble(long = c(-177, -116, 82), lat = c(67, 60,62)) %>%
+  st_as_sf(coords = c('long','lat'), crs = 4326)
+
+land <- st_union(land) %>% st_cast('POLYGON') %>% st_as_sf() %>%
+  st_join(points, left = F)
+
+mapview(land)
+
+pf <-  st_read('data/in/PermFrost/UiO_PEX_PERZONES_5.0_20181128_2000_2016_NH/UiO_PEX_PERZONES_5.0_20181128_2000_2016_NH.shp')
+
+# pf <- st_crop(st_make_valid(pf) %>% st_transform(4326), 
+#               xmin = -179.99, ymin = 50, xmax = 179.99, ymax = 84)
+
+sample <- st_sample(pf, 10000, type = 'hexagonal')
+
+check <- sample %>% st_transform(4326) %>% st_intersection(.,land) %>%
+  st_transform(st_crs(pf)) %>%
+  st_as_sf() %>%
+  st_join(pf %>% select(pf = EXTENT))
+
+check <- st_buffer(check, 10000, nQuadSegs = 2)
+
+check <- check %>% mutate(SampID = row_number(),
+                          pfCode = as.numeric(factor(pf))) 
+
+mapview(check, zcol = 'pf')
+
+st_write(check, 'data/out/grid_samp/ArcticGridSamp.shp')
+
+mapview(check)
+sum(st_area(check))
+
+check <- st_read('data/out/grid_samp/ArcticGridSamp.shp')
+mapview(check, zcol = 'pf')
+```
+
+# Munge the exports from EE datasets
+
+```{r, eval = F, include=F}
+
+munger <- function(path_in){
+  
+lakes <- read_csv(path_in) %>%  
+  select(ID = label, sampID = first, year = year_first, 
+         area = area_sum, .geo) %>%
+  mutate(area = round(area/1e6,5),
+         year = as.integer(year))
+
+## Fix the geo columns
+lakes %>% 
+  separate(.geo, into = c('text', 'coords'), sep = ':\\[') %>% 
+  separate(coords, into = c('long', 'lat'), sep = ',') %>% 
+  mutate(long = as.numeric(long), 
+         lat = gsub(lat, pattern = '\\]}', replacement = ''), 
+         lat = as.numeric(lat)) %>%
+  select(-text)
+
+  #write_feather(lakes, path_out)
+}
+
+p20 <- munger('data/out/AW_GEE_Exports/UCLA_Pick20.csv') %>%
+  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick20_NA.csv'))
+p50 <- munger('data/out/AW_GEE_Exports/UCLA_Pick50.csv') %>%
+  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick50_NA.csv'))
+p70 <- munger('data/out/AW_GEE_Exports/UCLA_Pick70.csv') %>%
+  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick70_NA.csv'))
+
+pick_munged_full <- p20 %>% rename(area20 = area) %>%
+  full_join(p50 %>% rename(area50 = area)) %>%
+  full_join(p70 %>% rename(area70 = area))
+
+write_feather(pick_munged_full, 'data/out/Pick_Munged_Full.feather')
+
+rm(p20,p50,p70)
+
+```
+
