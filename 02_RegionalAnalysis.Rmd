@@ -25,6 +25,20 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 lakes <- read_feather('data/out/Pick_Munged_Full.feather')
 
+
+## Check out some random individual timeseries
+lakeSamp = unique(lakes$sampID) %>% sample(.,20)
+
+lakes %>% filter(sampID %in% lakeSamp) %>%
+  select(sampID, year, area20,area50,area70) %>%
+  pivot_longer(-c(sampID,year), names_to = 'Threshold', values_to = 'area') %>%
+  na.omit() %>%
+  group_by(sampID, year, Threshold) %>%
+  summarise(area = sum(area)) %>%
+  ggplot(aes(x = year, y = area, color = Threshold)) + geom_line() +
+  facet_wrap(~sampID, scales = 'free')
+  
+
 sampMeans <- lakes %>% group_by(sampID,year) %>%
   summarise_at(vars(area20,area50,area70),sum, na.rm = T) %>%
   group_by(sampID) %>%
@@ -64,12 +78,15 @@ write_feather(tp, 'data/out/Trends_Pick_Full.feather')
 # Look at the trends spatially.
 
 ```{r}
-#tp <- read_feather('data/out/Trends_Pick_Full.feather')
+tp <- read_feather('data/out/Trends_Pick_Full.feather')
 
 samps.sf <- st_read('data/out/grid_samp/ArcticGridSamp.shp') %>%
-  select(sampID = SampID)
+  select(sampID = SampID) %>%
+  rbind(st_read('data/out/grid_samp/nonPFsamp.shp') %>%
+  select(sampID = SampID))
 
-arctic <- st_as_sf(maps::map("world", plot = FALSE, fill = TRUE, ylim = c(60,90))) %>%
+
+arctic <- st_as_sf(maps::map("world", plot = FALSE, fill = TRUE, ylim = c(55,90))) %>%
   st_transform(st_crs(samps.sf))
 
 plotter <- function(var){
@@ -99,6 +116,7 @@ p1 <- plotter('count') +
   ggthemes::theme_map() +
   theme(legend.position = 'right')
 
+p1
 ggsave('figures/countTrends.png', width = 6, height = 2.5, units = 'in')
 
 
@@ -114,6 +132,7 @@ p2 <- plotter('area') +
   ggthemes::theme_map() +
   theme(legend.position = 'right')
 
+p2
 ggsave('figures/areaTrends.png', width = 6, height = 2.5, units = 'in')
 
 p3 <- plotter('frac_area') + 
@@ -128,6 +147,7 @@ p3 <- plotter('frac_area') +
   ggthemes::theme_map() +
   theme(legend.position = 'right')
 
+p3
 ggsave('figures/Frac_areaTrends.png', width = 6, height = 2.5, units = 'in')
 
 
@@ -139,7 +159,7 @@ ggsave('figures/ChangeNinePanel.png', plot = g, width = 6, height = 6, units = '
 ## tie the above to sample-characteristic in hydroAtlas
 
 ```{r}
-sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Meds.csv') %>%
+sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Medians.csv') %>%
   rename(sampID = SampID) %>%
   rowwise() %>%
   mutate(clay = mean(c(`clay_0-5cm_mean`, `clay_100-200cm_mean`, `clay_15-30cm_mean`, 
@@ -155,6 +175,17 @@ sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Meds.csv
   left_join(read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics.csv') %>% select(BurnArea,BurnYear, sampID = SampID))
   
 
+check <- tp %>% filter(name == 'frac_area', Threshold == 'area70') %>%
+  left_join(sampChar) %>%
+  left_join(samps.sf) %>% st_as_sf()
+
+check %>% filter(PFProb == 0) %>%
+  mutate(trend = ifelse(slope > 0 , 'Pos', 'Neg')) %>%
+  st_centroid() 
+
+ggplot(check, aes(x = PFProb, y = slope)) + geom_hex() + scale_fill_viridis_c(trans = 'log10')
+
+ggplot(check %>% filter(PFProb == 0), aes(x = slope)) + geom_histogram()
 
 give.n <- function(x){
   return(c(y = 0.01, label = length(x))) 
@@ -167,8 +198,8 @@ plotter <- function(att, cuts, pfProbH = 1, pfProbL = 0){
     filter(PFProb >= pfProbL, PFProb <= pfProbH) %>%
     select(sampID, Threshold, slope, var = att) %>%
     #mutate(quintiles1 = cut_number(var, 5)) %>%
-    mutate(quintiles1 = cut_interval(var, 6)) %>%
-    #mutate(quintiles1 = cut(var, breaks = cuts, right = F, include.lowest = T)) %>%
+    #mutate(quintiles1 = cut_interval(var, 5)) %>%
+    mutate(quintiles1 = cut(var, breaks = cuts, right = F, include.lowest = T)) %>%
     filter(!is.na(var)) %>%
     ggplot(aes(x = quintiles1, y = slope)) + 
     geom_violin() +
@@ -182,9 +213,10 @@ plotter <- function(att, cuts, pfProbH = 1, pfProbL = 0){
 
 plotter('PermP') + labs(title = 'Permeability', x = 'Permeability')
 plotter('Porosity',pfProbL = 0.90)
-plotter('sand', pfProbL = 0.99) + labs(title = 'Sand Soil Content in Continous Permafrost', x = 'Sand (g/kg)')
-plotter('sand', pfProbH = 0.99) + labs(title = 'Sand Soil Content in Discontinous Permafrost', x = 'Sand (g/kg)')
-plotter('PFProb', cuts = c(0,0.005,0.05,0.1,0.50,.99,1)) + labs(title = 'Permafrost Probability', x = 'Permafrost Probablility')
+
+plotter('sand', pfProbL = 0.90) + labs(title = 'Sand Soil Content in Continous Permafrost', x = 'Sand (g/kg)')
+plotter('sand', pfProbH = 0.90) + labs(title = 'Sand Soil Content in Discontinous Permafrost', x = 'Sand (g/kg)')
+plotter('PFProb', cuts = c(0,0.05,.20,.50,.99,1)) + labs(title = 'Permafrost Probability', x = 'Permafrost Probablility')
 plotter('BurnArea', cuts = c(0,0.1,0.2,0.5,0.75,1)) + labs(title = 'Percent Area Burned since 2000', x = 'Burn Area (%)')
 plotter('soc')
 ##Good ones, gwt_cm_sav, area, "prm_pc_sse" isn't too bad (only 4 groups though), 'slt_pc_sav', 'snd_pc_sav', 'ari_ix_sav
