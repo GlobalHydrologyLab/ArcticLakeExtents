@@ -15,6 +15,7 @@ library(feather)
 library(furrr)
 library(trend)
 library(tictoc)
+library(rnaturalearth)
 
 knitr::opts_chunk$set(echo = TRUE)
 ```
@@ -23,11 +24,12 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r, eval=F, include=F}
 #### Make the sample grid
-library(rnaturalearth)
+## Create a land mask
 land <- ne_countries(scale = 'medium', returnclass = 'sf') %>%
   st_crop(.,xmin = -180, ymin = 50, xmax = 180, ymax = 84) %>%
   filter(name_long != 'Iceland', name_long != 'Greenland')
 
+## Get rid of all the islands so we're just looking at the contiguous Arctic
 land <- land %>% st_cast('MULTIPOLYGON') %>% st_cast('POLYGON')
 
 points <- tibble(long = c(-177, -116, 82), lat = c(67, 60,62)) %>%
@@ -36,8 +38,10 @@ points <- tibble(long = c(-177, -116, 82), lat = c(67, 60,62)) %>%
 land <- st_union(land) %>% st_cast('POLYGON') %>% st_as_sf() %>%
   st_join(points, left = F)
 
+rm(points)
 mapview(land)
 
+## Read in the Jaroslav 2019 PF extent
 pf <-  st_read('data/in/PermFrost/UiO_PEX_PERZONES_5.0_20181128_2000_2016_NH/UiO_PEX_PERZONES_5.0_20181128_2000_2016_NH.shp')
 
 # pf <- st_crop(st_make_valid(pf) %>% st_transform(4326), 
@@ -45,25 +49,44 @@ pf <-  st_read('data/in/PermFrost/UiO_PEX_PERZONES_5.0_20181128_2000_2016_NH/UiO
 
 sample <- st_sample(pf, 10000, type = 'hexagonal')
 
-check <- sample %>% st_transform(4326) %>% st_intersection(.,land) %>%
+sampPoly <- sample %>% st_transform(4326) %>% st_intersection(.,land) %>%
   st_transform(st_crs(pf)) %>%
   st_as_sf() %>%
-  st_join(pf %>% select(pf = EXTENT))
+  st_join(pf %>% select(pf = EXTENT)) %>%
+  st_buffer(., 10000, nQuadSegs = 2)%>% 
+  mutate(SampID = row_number(),
+         pfCode = as.numeric(factor(pf))) 
 
-check <- st_buffer(check, 10000, nQuadSegs = 2)
+mapview(sampPoly, zcol = 'pf')
 
-check <- check %>% mutate(SampID = row_number(),
-                          pfCode = as.numeric(factor(pf))) 
+sum(st_area(sampPoly))
 
-mapview(check, zcol = 'pf')
+st_write(sampPoly, 'data/out/grid_samp/ArcticGridSamp.shp')
 
-st_write(check, 'data/out/grid_samp/ArcticGridSamp.shp')
+sampPoly <- st_read('data/out/grid_samp/ArcticGridSamp.shp')
 
-mapview(check)
-sum(st_area(check))
+## Make  secondary sample grid in the zero permafrost zone.
+nonPFsamp <- st_sample(land %>% st_transform(st_crs(pf)), 5000, type = 'hexagonal') %>%
+  st_as_sf() %>%
+  st_buffer(., 10000, nQuadSegs = 2)%>% 
+  mutate(sampID = row_number()) %>%
+  st_join(pf %>% select(pf = EXTENT)) %>%
+  filter(is.na(pf))
 
-check <- st_read('data/out/grid_samp/ArcticGridSamp.shp')
-mapview(check, zcol = 'pf')
+nonPFsamp <- nonPFsamp %>% st_join(sampPoly %>% filter(pf == 'Isol'),
+                               join = st_is_within_distance, dist = 300000) %>% 
+  filter(!is.na(pf.y)) %>% 
+  distinct(sampID, .keep_all = T)
+
+summary(sampPoly$SampID)
+
+nonPFsamp <- nonPFsamp %>%
+  mutate(SampID = max(sampPoly$SampID) + row_number(),
+         pf = NA,
+         pfCode = 0) %>%
+  select(SampID, pf, pfCode)
+
+st_write(nonPFsamp, 'data/out/grid_samp/nonPFsamp.shp')
 ```
 
 # Munge the exports from EE datasets
@@ -91,11 +114,16 @@ lakes %>%
 }
 
 p20 <- munger('data/out/AW_GEE_Exports/UCLA_Pick20.csv') %>%
-  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick20_NA.csv'))
+  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick20_NA.csv')) %>%
+  bind_rows(munger('data/out/AW_GEE_EXports/UCLA_Pick20_noPF.csv'))
+  
 p50 <- munger('data/out/AW_GEE_Exports/UCLA_Pick50.csv') %>%
-  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick50_NA.csv'))
+  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick50_NA.csv'))%>%
+  bind_rows(munger('data/out/AW_GEE_EXports/UCLA_Pick50_noPF.csv'))
+
 p70 <- munger('data/out/AW_GEE_Exports/UCLA_Pick70.csv') %>%
-  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick70_NA.csv'))
+  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick70_NA.csv')) %>%
+  bind_rows(munger('data/out/AW_GEE_EXports/UCLA_Pick70_noPF.csv'))
 
 pick_munged_full <- p20 %>% rename(area20 = area) %>%
   full_join(p50 %>% rename(area50 = area)) %>%
