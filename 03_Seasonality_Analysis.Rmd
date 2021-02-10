@@ -41,13 +41,13 @@ paste(pos.seasonal$sampID, collapse = ', ')
 ```
 
 ```{r}
-Clim <- read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year_500.csv') %>%
+Clim <- read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year_500_Pick70.csv') %>%
   select(area = sum,precip =  PrecipE_mean ,temp = TempE_mean, 
          sampID = SampID, month) %>%
   pivot_longer(-c(sampID, month)) %>%
   mutate(period = '2000-2006') %>%
   full_join(
-    read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year_500.csv') %>%
+    read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year_500_Pick70.csv') %>%
      select(area = Latesum,precip =  PrecipL_mean ,temp = TempL_mean, 
            sampID = SampID, month) %>%
       pivot_longer(-c(sampID, month)) %>%
@@ -56,13 +56,13 @@ Clim <- read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year_500.csv') %
   
 Clim <- Clim %>%
   bind_rows(
-    read_csv('data/out/AW_GEE_Exports/AreaLossClimatologies6year_500.csv') %>%
+    read_csv('data/out/AW_GEE_Exports/AreaLossClimatologies6year_500_Pick70.csv') %>%
       select(area = sum, precip =  PrecipE_mean ,temp = TempE_mean, 
              sampID = SampID, month) %>%
       pivot_longer(-c(sampID, month)) %>%
       mutate(period = '2000-2006') %>%
       full_join(
-        read_csv('data/out/AW_GEE_Exports/AreaLossClimatologies6year_500.csv') %>%
+        read_csv('data/out/AW_GEE_Exports/AreaLossClimatologies6year_500_Pick70.csv') %>%
          select(area = Latesum,precip =  PrecipL_mean ,temp = TempL_mean, 
                sampID = SampID, month) %>%
           pivot_longer(-c(sampID, month)) %>%
@@ -91,7 +91,7 @@ ggplot(ClimDiffs, aes(x = factor(month), y = diff)) +
   facet_grid(name~trend, scales = 'free')
 
 climScaled <- Clim %>%
-  filter(value != 0, month %in% c(6:9)) %>%
+  filter(value != 0, month %in% c(6:10)) %>%
   group_by(sampID, name) %>%
   mutate(value = scale(value)) %>%
   ungroup()
@@ -99,11 +99,14 @@ climScaled <- Clim %>%
 
 ggplot(climScaled,# %>% filter(month %in% c(5:10)), 
        aes(x = month, y = value, color = period))  +
-  geom_jitter(alpha = .05) +
+  geom_jitter(alpha = .01) +
   geom_smooth(method = 'loess') +
   scale_colour_viridis_d(end = .5) +
   facet_grid(name~trend, scales = 'free') +
-  theme_bw()
+  theme_bw() +
+  labs(x = 'Month', y = 'Value (z-normalized)', title = 'Climatologies')
+
+ggsave('figures/climatologies500.png', width = 4.5, height = 4, units = 'in')
 
 ggplot(climScaled,# %>% filter(month %in% c(5:10)), 
        aes(x = factor(month), y = value, fill = trend))  +

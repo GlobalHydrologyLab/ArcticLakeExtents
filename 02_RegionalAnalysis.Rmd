@@ -30,7 +30,7 @@ lakes <- read_feather('data/out/Pick_Munged_Full.feather')
 lakeSamp = unique(lakes$sampID) %>% sample(.,20)
 
 lakes %>% filter(sampID %in% lakeSamp) %>%
-  select(sampID, year, area20,area50,area70) %>%
+  select(sampID, year, area20,area50,area70,area90) %>%
   pivot_longer(-c(sampID,year), names_to = 'Threshold', values_to = 'area') %>%
   na.omit() %>%
   group_by(sampID, year, Threshold) %>%
@@ -40,13 +40,13 @@ lakes %>% filter(sampID %in% lakeSamp) %>%
   
 
 sampMeans <- lakes %>% group_by(sampID,year) %>%
-  summarise_at(vars(area20,area50,area70),sum, na.rm = T) %>%
+  summarise_at(vars(area20,area50,area70,area90),sum, na.rm = T) %>%
   group_by(sampID) %>%
-  summarise_at(vars(area20,area50,area70),  mean, na.rm = T) %>%
+  summarise_at(vars(area20,area50,area70,area90),  mean, na.rm = T) %>%
   ungroup() %>%
   pivot_longer(-sampID, names_to = 'Threshold', values_to = 'Mean_Area')
 
-tp <- lakes %>% select(sampID, year, area20,area50,area70) %>%
+tp <- lakes %>% select(sampID, year, area20,area50,area70,area90) %>%
   pivot_longer(-c(sampID,year), names_to = 'Threshold', values_to = 'area') %>%
   na.omit() %>%
   group_by(sampID, year, Threshold) %>%
@@ -117,6 +117,7 @@ p1 <- plotter('count') +
   theme(legend.position = 'right')
 
 p1
+
 ggsave('figures/countTrends.png', width = 6, height = 2.5, units = 'in')
 
 
@@ -153,26 +154,17 @@ ggsave('figures/Frac_areaTrends.png', width = 6, height = 2.5, units = 'in')
 
 g <- gridExtra::grid.arrange(p1,p2,p3, nrow =3)
 
-ggsave('figures/ChangeNinePanel.png', plot = g, width = 6, height = 6, units = 'in')
+ggsave('figures/Change12Panel.png', plot = g, width = 8, height = 6, units = 'in')
 ```
 
 ## tie the above to sample-characteristic in hydroAtlas
 
 ```{r}
 sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Medians.csv') %>%
+  select(-BurnArea, -BurnYear) %>%
   rename(sampID = SampID) %>%
-  rowwise() %>%
-  mutate(clay = mean(c(`clay_0-5cm_mean`, `clay_100-200cm_mean`, `clay_15-30cm_mean`, 
-                       `clay_30-60cm_mean`, `clay_5-15cm_mean`, `clay_60-100cm_mean`), na.rm = T),
-         sand = mean(c(`sand_0-5cm_mean`, `sand_100-200cm_mean`, `sand_15-30cm_mean`, 
-                       `sand_30-60cm_mean`, `sand_5-15cm_mean`, `sand_60-100cm_mean`), na.rm = T),
-         soc = mean(c(`soc_0-5cm_mean`, `soc_100-200cm_mean`, `soc_15-30cm_mean`, 
-                       `soc_30-60cm_mean`, `soc_5-15cm_mean`, `soc_60-100cm_mean`), na.rm = T)) %>%
-  ungroup() %>%
-  select(-c(`clay_0-5cm_mean`:`clay_60-100cm_mean`,
-            `sand_0-5cm_mean`:`sand_60-100cm_mean`,
-            `clay_0-5cm_mean`:`soc_60-100cm_mean`, `system:index`, .geo, BurnArea, BurnYear)) %>%
-  left_join(read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics.csv') %>% select(BurnArea,BurnYear, sampID = SampID))
+  left_join(read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Means.csv') %>%
+              select(BurnArea, BurnYear, sampID = SampID))
   
 
 check <- tp %>% filter(name == 'frac_area', Threshold == 'area70') %>%
@@ -191,11 +183,15 @@ give.n <- function(x){
   return(c(y = 0.01, label = length(x))) 
   # experiment with the multiplier to find the perfect position
 }
+tp <- tp %>% mutate(Threshold = factor(Threshold, 
+                                       levels = c('area20','area50','area70','area90'),
+                                       labels = c('Ephemeral (20%)', 'Highly Seasonal (50%)', 'Seasonal (70%)', 'Permanent (90%)' )))
 
-plotter <- function(att, cuts, pfProbH = 1, pfProbL = 0){
+plotter <- function(att, cuts, pfProbH = 1.1, pfProbL = 0){
  sampChar %>%
-    right_join(tp %>% filter(name == 'frac_area')) %>%
-    filter(PFProb >= pfProbL, PFProb <= pfProbH) %>%
+    right_join(tp %>% filter(name == 'frac_area')) %>% #, 
+                             #Threshold != 'Highly Seasonal (50%)')) %>%
+    filter(PFProb >= pfProbL, PFProb < pfProbH) %>%
     select(sampID, Threshold, slope, var = att) %>%
     #mutate(quintiles1 = cut_number(var, 5)) %>%
     #mutate(quintiles1 = cut_interval(var, 5)) %>%
@@ -206,18 +202,32 @@ plotter <- function(att, cuts, pfProbH = 1, pfProbL = 0){
     geom_boxplot(width = .1) +
     geom_hline(yintercept =  0, color = 'red') +
     stat_summary(fun.data = give.n, geom = "text", fun = median, hjust = 1.1) +
-    coord_cartesian(ylim = c(-0.01,0.01)) +
-    labs(x = att, y = 'Slope (percent mean area/year)') +
+    coord_cartesian(ylim = c(-0.05,0.01)) +
+    labs(x = att, y = 'Slope (% Area/year)') +
     facet_wrap(~Threshold, nrow = 1)
 }
 
 plotter('PermP') + labs(title = 'Permeability', x = 'Permeability')
+ggsave('figures/PermPDist.png',width = 8.5, height = 4, units = 'in')
+
+
 plotter('Porosity',pfProbL = 0.90)
 
-plotter('sand', pfProbL = 0.90) + labs(title = 'Sand Soil Content in Continous Permafrost', x = 'Sand (g/kg)')
-plotter('sand', pfProbH = 0.90) + labs(title = 'Sand Soil Content in Discontinous Permafrost', x = 'Sand (g/kg)')
-plotter('PFProb', cuts = c(0,0.05,.20,.50,.99,1)) + labs(title = 'Permafrost Probability', x = 'Permafrost Probablility')
+
+plotter('sand', pfProbL = 0.7) + labs(title = 'Sand Soil Content in Continous Permafrost', x = 'Sand (g/kg)')
+ggsave('figures/SandPFDist.png',width = 8.5, height = 4, units = 'in')
+
+plotter('sand', pfProbH = 0.7) + labs(title = 'Sand Soil Content in Discontinous Permafrost', x = 'Sand (g/kg)')
+ggsave('figures/SandDPFDist.png',width = 8.5, height = 4, units = 'in')
+
+
+plotter('PFProb', cuts = c(0,0.01,.20,.50,.99,1)) + labs(title = 'Permafrost Probability', x = 'Permafrost Probablility (%)')
+
+ggsave('figures/PFProbDist.png',width = 8.5, height = 4, units = 'in')
+
 plotter('BurnArea', cuts = c(0,0.1,0.2,0.5,0.75,1)) + labs(title = 'Percent Area Burned since 2000', x = 'Burn Area (%)')
+
+
 plotter('soc')
 ##Good ones, gwt_cm_sav, area, "prm_pc_sse" isn't too bad (only 4 groups though), 'slt_pc_sav', 'snd_pc_sav', 'ari_ix_sav
 ```

@@ -125,13 +125,18 @@ p70 <- munger('data/out/AW_GEE_Exports/UCLA_Pick70.csv') %>%
   bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick70_NA.csv')) %>%
   bind_rows(munger('data/out/AW_GEE_EXports/UCLA_Pick70_noPF.csv'))
 
+p90 <- munger('data/out/AW_GEE_Exports/UCLA_Pick90.csv')
+
 pick_munged_full <- p20 %>% rename(area20 = area) %>%
   full_join(p50 %>% rename(area50 = area)) %>%
   full_join(p70 %>% rename(area70 = area))
 
+pick_munged_full <-  read_feather('data/out/Pick_Munged_Full.feather') %>%
+  full_join(p90 %>% rename(area90 = area))
+
 write_feather(pick_munged_full, 'data/out/Pick_Munged_Full.feather')
 
-rm(p20,p50,p70)
+rm(p20,p50,p70,p90, pick_munged_full)
 
 ```
 
