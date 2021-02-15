@@ -25,7 +25,51 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 lakes <- read_feather('data/out/Pick_Munged_Full.feather')
 
+################
+lakes <- read_csv('data/out/AW_GEE_Exports/UCLA_Pick20_3year.csv') %>%
+  select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'area20') %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports/UCLA_Pick50_3year.csv') %>%
+  select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'area50')) %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports/UCLA_Pick70_3year.csv') %>%
+  select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'area70')) %>%
+  mutate(area = round(area/1e6,5))
+  
 
+sampMeans <- lakes %>% group_by(sampID, Threshold) %>%
+  summarise(Mean_area = mean(area)) %>%
+  filter(Mean_area > 0) %>%
+  mutate(filtID = paste0(Threshold,"_",sampID))
+
+filt <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
+  filter(filtID %in% sampMeans$filtID) %>%
+  group_by(filtID) %>%
+  summarise(count = n()) %>%
+  filter(count > 10)
+
+tp <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
+  filter(filtID %in% filt$filtID) %>%
+  left_join(sampMeans) %>%
+  mutate(frac_area = area/Mean_area) %>%
+  select(-c(filtID, Mean_area)) %>%
+  pivot_longer(c(area, count, frac_area))
+
+
+tp <- tp %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, name,Threshold) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
+
+lakes.filtered <- lakes %>% group_by(ID) %>%
+  summarise(area70 = mean(area70, na.rm = T)) %>%
+  filter(area70 < 10)
+
+lakes <- lakes %>% filter(ID %in% lakes.filtered$ID)
+################
 ## Check out some random individual timeseries
 lakeSamp = unique(lakes$sampID) %>% sample(.,20)
 
@@ -154,7 +198,7 @@ ggsave('figures/Frac_areaTrends.png', width = 6, height = 2.5, units = 'in')
 
 g <- gridExtra::grid.arrange(p1,p2,p3, nrow =3)
 
-ggsave('figures/Change12Panel.png', plot = g, width = 8, height = 6, units = 'in')
+ggsave('figures/Change9Panel_3Year.png', plot = g, width = 8, height = 6, units = 'in')
 ```
 
 ## tie the above to sample-characteristic in hydroAtlas
@@ -202,7 +246,7 @@ plotter <- function(att, cuts, pfProbH = 1.1, pfProbL = 0){
     geom_boxplot(width = .1) +
     geom_hline(yintercept =  0, color = 'red') +
     stat_summary(fun.data = give.n, geom = "text", fun = median, hjust = 1.1) +
-    coord_cartesian(ylim = c(-0.05,0.01)) +
+    coord_cartesian(ylim = c(-0.01,0.01)) +
     labs(x = att, y = 'Slope (% Area/year)') +
     facet_wrap(~Threshold, nrow = 1)
 }
@@ -231,6 +275,53 @@ plotter('BurnArea', cuts = c(0,0.1,0.2,0.5,0.75,1)) + labs(title = 'Percent Area
 plotter('soc')
 ##Good ones, gwt_cm_sav, area, "prm_pc_sse" isn't too bad (only 4 groups though), 'slt_pc_sav', 'snd_pc_sav', 'ari_ix_sav
 ```
+
+
+## Alternative viz
+
+```{r}
+
+filt <- sampMeans %>% filter(Threshold == 'area70') %>%
+  filter(Mean_Area > 3)
+
+
+tp %>% filter(name == 'frac_area', 
+              Threshold == 'Seasonal (70%)') %>%
+  left_join(sampChar) %>%
+  ungroup() %>%
+  #mutate(PFProb = cut_interval(PFProb, 100, labels = F)) %>%
+  mutate(PFProb = cut(PFProb, breaks = c(0,0.01,.20,.50,.99,1), labels = F)) %>%
+  ggplot(aes(x = PFProb, y = slope)) +
+  #geom_point(alpha = .0) +
+  stat_summary(
+    fun.min = function(z) { quantile(z,0.25) },
+    fun.max = function(z) { quantile(z,0.75) },
+    geom = 'ribbon', alpha = .1) +
+   stat_summary(fun = median, geom = 'line') +
+  coord_cartesian(ylim = c(-.02,.01))
+
+
+
+tp %>% filter(name == 'frac_area', 
+              Threshold == 'area70') %>%
+  left_join(sampChar) %>%
+  ungroup() %>%
+  mutate(PFProb = cut_interval(PFProb, 50)) %>%
+  #mutate(PFProb = cut(PFProb, breaks = c(0,0.01,.20,.50,.99,1), labels = F)) %>%
+  ggplot(aes(x = PFProb, y = slope)) +
+  #geom_point(alpha = .0) +
+  stat_summary(
+    fun = median,
+    fun.min = function(z) { quantile(z,0.25) },
+    fun.max = function(z) { quantile(z,0.75) },
+    geom = 'crossbar', alpha = .1) +
+   stat_summary(fun = mean, geom = 'line') +
+  coord_cartesian(ylim = c(-.02,.01))
+
+
+
+```
+
 
 ## Look at appearing and disapearing lakes
 
