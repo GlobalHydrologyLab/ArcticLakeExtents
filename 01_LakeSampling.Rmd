@@ -89,62 +89,238 @@ nonPFsamp <- nonPFsamp %>%
 st_write(nonPFsamp, 'data/out/grid_samp/nonPFsamp.shp')
 ```
 
-# Munge the exports from EE datasets
 
-```{r, eval = F, include=F}
-
-munger <- function(path_in){
-  
-lakes <- read_csv(path_in) %>%  
-  select(ID = label, sampID = first, year = year_first, 
-         area = area_sum, .geo) %>%
+## Monthly Munger
+```{r}
+lakes <- read_csv('data/out/AW_GEE_Exports/UCLA_Pick20_Monthly.csv') %>%
+  select(sampID = SampID, area = area_sum, count, year = year_first, month = month_first) %>%
+  mutate(Threshold = 'Ephemeral') %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports/UCLA_Pick50_Monthly.csv') %>%
+              select(sampID = SampID, area = area_sum, count, year = year_first, month = month_first) %>% 
+              mutate(Threshold = 'Seasonal')) %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports/UCLA_Pick70_Monthly.csv') %>%
+              select(sampID = SampID, area = area_sum, count, year = year_first, month = month_first) %>% 
+              mutate(Threshold = 'Permanent')) %>%
   mutate(area = round(area/1e6,5),
-         year = as.integer(year))
-
-## Fix the geo columns
-lakes %>% 
-  separate(.geo, into = c('text', 'coords'), sep = ':\\[') %>% 
-  separate(coords, into = c('long', 'lat'), sep = ',') %>% 
-  mutate(long = as.numeric(long), 
-         lat = gsub(lat, pattern = '\\]}', replacement = ''), 
-         lat = as.numeric(lat)) %>%
-  select(-text)
-
-  #write_feather(lakes, path_out)
-}
-
-p20 <- munger('data/out/AW_GEE_Exports/UCLA_Pick20.csv') %>%
-  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick20_NA.csv')) %>%
-  bind_rows(munger('data/out/AW_GEE_EXports/UCLA_Pick20_noPF.csv'))
-  
-p50 <- munger('data/out/AW_GEE_Exports/UCLA_Pick50.csv') %>%
-  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick50_NA.csv'))%>%
-  bind_rows(munger('data/out/AW_GEE_EXports/UCLA_Pick50_noPF.csv'))
-
-p70 <- munger('data/out/AW_GEE_Exports/UCLA_Pick70.csv') %>%
-  bind_rows(munger('data/out/AW_GEE_Exports/UCLA_Pick70_NA.csv')) %>%
-  bind_rows(munger('data/out/AW_GEE_EXports/UCLA_Pick70_noPF.csv'))
-
-p90 <- munger('data/out/AW_GEE_Exports/UCLA_Pick90.csv')
-
-pick_munged_full <- p20 %>% rename(area20 = area) %>%
-  full_join(p50 %>% rename(area50 = area)) %>%
-  full_join(p70 %>% rename(area70 = area))
-
-pick_munged_full <-  read_feather('data/out/Pick_Munged_Full.feather') %>%
-  full_join(p90 %>% rename(area90 = area))
-
-write_feather(pick_munged_full, 'data/out/Pick_Munged_Full.feather')
-
-rm(p20,p50,p70,p90, pick_munged_full)
+         Threshold = factor(Threshold, levels = c('Ephemeral', 'Seasonal', 'Permanent')))
 
 ```
-
 
 
 ```{r}
+sampMeans <- lakes %>% group_by(sampID, Threshold, month) %>%
+  summarise(Mean_area = mean(area)) %>%
+  filter(Mean_area > 0) %>%
+  mutate(filtID = paste0(Threshold,"_",sampID,'_',month))
+
+filt <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID,'_',month)) %>%
+  filter(filtID %in% sampMeans$filtID) %>%
+  group_by(filtID) %>%
+  summarise(count = n()) %>%
+  filter(count > 10)
+
+tp <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID,'_',month)) %>%
+  filter(filtID %in% filt$filtID) %>%
+  left_join(sampMeans) %>%
+  mutate(frac_area = area/Mean_area) %>%
+  select(-c(filtID, Mean_area)) %>%
+  pivot_longer(c(area, count, frac_area))
+
+
+tp <- tp %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, name,Threshold, month) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
+
+write_feather(tp, 'data/out/Trends_Monthly_Pick_Full.feather')
+```
+
+# Look at the trends spatially.
+
+```{r}
+tp <- read_feather('data/out/Trends_Pick_Full.feather')
+
+samps.sf <- st_read('data/out/grid_samp/ArcticGridSamp.shp') %>%
+  select(sampID = SampID) %>%
+  rbind(st_read('data/out/grid_samp/nonPFsamp.shp') %>%
+  select(sampID = SampID))
+
+
+arctic <- st_as_sf(maps::map("world", plot = FALSE, fill = TRUE, ylim = c(55,90))) %>%
+  st_transform(st_crs(samps.sf))
+
+
+plotter <- function(var, thresh){
+  tp %>%
+    filter(name == var) %>%
+    mutate(month = lubridate::month(month, label = T, abbr = T)) %>%
+    mutate(slope = ifelse(slope > thresh, thresh, ifelse(slope < -1*thresh, -1*thresh, slope))) %>%
+    left_join(samps.sf) %>%
+    st_as_sf() %>%
+    ggplot() +
+      geom_sf(data = arctic) +
+      geom_sf(aes(color = slope, fill = slope)) +
+      labs(title = var) +
+      facet_grid(Threshold~month)
+}
+
+p1 <- plotter('count',.5) + 
+  scale_color_gradient2(mid = 'grey80', 
+                        breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
+                        labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
+      scale_fill_gradient2(mid = 'grey80', 
+                           breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
+                        labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
+  labs(title = expression(Lake~Count~(n~yr^-1 )), 
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'right')
+
+#p1
+#ggsave('figures/countTrends.png', width = 6, height = 2.5, units = 'in')
+
+
+p2 <- plotter('area',.1) + 
+  scale_color_gradient2(mid = 'grey80', 
+                        breaks = c(-0.1,-0.05, 0, 0.05,0.1), 
+                        labels = c('<-0.1', -0.05, 0, 0.05, '>0.1')) +
+      scale_fill_gradient2(mid = 'grey80', 
+                           breaks = c(-0.1,-0.05, 0, 0.05,0.1), 
+                        labels = c('<-0.1', -0.05, 0, 0.05, '>0.1')) +
+  labs(title = expression(Area~Change~(km^2~yr^-1 )), 
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'bottom')
+
+p2
+ggsave('figures/area_Monthly.png', width = 6, height = 6, units = 'in')
+
+p3 <- plotter('frac_area', 0.01) + 
+  scale_color_gradient2(mid = 'grey80',  
+                        breaks = c(-0.01,-0.005, 0, 0.005,0.01), 
+                        labels = c('<-1%', "-0.5%", "0%", "0.5%", '>1%')) +
+  scale_fill_gradient2(mid = 'grey80',
+                       breaks = c(-0.01,-0.005, 0, 0.005,0.01), 
+                       labels = c('<-1%', "-0.5%", "0%", "0.5%", '>1%')) +
+  labs(title = expression(Fractional~Change~(percent~yr^-1 )),
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'bottom')
+
+p3
+ggsave('figures/Frac_areaMonthly.png', width = 6.5, height = 6, units = 'in')
+
+```
+
+## tie the above to sample-characteristic in hydroAtlas
+
+```{r}
+sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Medians.csv') %>%
+  select(-BurnArea, -BurnYear) %>%
+  rename(sampID = SampID) %>%
+  left_join(read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Means.csv') %>%
+              select(BurnArea, BurnYear, sampID = SampID))
+  
+
+give.n <- function(x){
+  return(c(y = 0.01, label = length(x))) 
+  # experiment with the multiplier to find the perfect position
+}
+tp <- tp %>% mutate(Threshold = factor(Threshold, 
+                                       levels = c('area20','area50','area70'),
+                                       labels = c('Ephemeral (20%)', 'Seasonal (50%)', 'Permanent (70%)')))
+
+plotter <- function(att, cuts, pfProbH = 1, pfProbL = 0){
+ sampChar %>%
+    right_join(tp %>% filter(name == 'frac_area')) %>% 
+    filter(PFProb >= pfProbL, PFProb <= pfProbH) %>%
+    select(sampID, Threshold, slope, month, var = att) %>%
+    #mutate(quintiles1 = cut_number(var, 5)) %>%
+    #mutate(quintiles1 = cut_interval(var, 5)) %>%
+    mutate(quintiles1 = cut(var, breaks = cuts, right = F, include.lowest = T)) %>%
+    filter(!is.na(var)) %>%
+    ggplot(aes(x = quintiles1, y = slope)) + 
+    geom_violin() +
+    geom_boxplot(width = .1) +
+    geom_hline(yintercept =  0, color = 'red') +
+    stat_summary(fun.data = give.n, geom = "text", fun = median, hjust = 1.1) +
+    coord_cartesian(ylim = c(-0.02,0.01)) +
+    labs(x = att, y = 'Slope (% Area/year)') +
+    facet_grid(Threshold~month)
+}
+
+plotter('PermP') + labs(title = 'Permeability', x = 'Permeability')
+ggsave('figures/PermPDist.png',width = 8.5, height = 4, units = 'in')
+
+
+plotter('Porosity',pfProbL = 0.90)
+
+
+plotter('sand', pfProbL = 0.7) + labs(title = 'Sand Soil Content in Continous Permafrost', x = 'Sand (g/kg)')
+ggsave('figures/SandPFDist.png',width = 8.5, height = 4, units = 'in')
+
+plotter('sand', pfProbH = 0.7) + labs(title = 'Sand Soil Content in Discontinous Permafrost', x = 'Sand (g/kg)')
+ggsave('figures/SandDPFDist.png',width = 8.5, height = 4, units = 'in')
+
+
+plotter('PFProb', cuts = c(0,0.01,.20,.50,.99,1)) + labs(title = 'Permafrost Probability', x = 'Permafrost Probablility (%)')
+
+ggsave('figures/PFProbDist.png',width = 8.5, height = 4, units = 'in')
+
+plotter('BurnArea', cuts = c(0,0.1,0.2,0.5,0.75,1)) + labs(title = 'Percent Area Burned since 2000', x = 'Burn Area (%)')
+
+
+plotter('soc')
+##Good ones, gwt_cm_sav, area, "prm_pc_sse" isn't too bad (only 4 groups though), 'slt_pc_sav', 'snd_pc_sav', 'ari_ix_sav
+```
+
+
+## Alternative viz
+
+```{r}
+
+filt <- sampMeans %>% filter(Threshold == 'area70') %>%
+  filter(Mean_Area > 3)
+
+tp %>% filter(name == 'frac_area') %>%
+  left_join(sampChar) %>%
+  ungroup() %>%
+  mutate(PFProb = cut_interval(PFProb, 25, labels = F)*4) %>%
+  #mutate(PFProb = cut(PFProb, breaks = c(0,0.01,.20,.50,.99,1), labels = F)) %>%
+  ggplot(aes(x = PFProb, y = slope)) +
+  #geom_point(alpha = .0) +
+  stat_summary(
+    fun.min = function(z) { quantile(z,0.25) },
+    fun.max = function(z) { quantile(z,0.75) },
+    geom = 'ribbon', alpha = .1) +
+   stat_summary(fun = median, geom = 'line') +
+  coord_cartesian(ylim = c(-.02,.01)) +
+  geom_hline(yintercept = 0, color = 'red') +
+  facet_grid(Threshold~month)
+
+
+
+tp %>% filter(name == 'frac_area', 
+              Threshold == 'area70') %>%
+  left_join(sampChar) %>%
+  ungroup() %>%
+  mutate(PFProb = cut_interval(PFProb, 50)) %>%
+  #mutate(PFProb = cut(PFProb, breaks = c(0,0.01,.20,.50,.99,1), labels = F)) %>%
+  ggplot(aes(x = PFProb, y = slope)) +
+  #geom_point(alpha = .0) +
+  stat_summary(
+    fun = median,
+    fun.min = function(z) { quantile(z,0.25) },
+    fun.max = function(z) { quantile(z,0.75) },
+    geom = 'crossbar', alpha = .1) +
+   stat_summary(fun = mean, geom = 'line') +
+  coord_cartesian(ylim = c(-.02,.01))
 
 
 
 ```
-
