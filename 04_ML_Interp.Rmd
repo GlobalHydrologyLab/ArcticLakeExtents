@@ -10,7 +10,7 @@ library(tidyverse)
 library(xgboost)
 library(Metrics)
 library(gridExtra)
-
+library(feather)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -25,24 +25,25 @@ monthly <- read_feather('data/out/Trends_Monthly_Pick_Full.feather')
 annual <- read_feather('data/out/Trends_Pick_Full.feather')
 
 sampChar <- sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Medians.csv') %>%
-  select(-BurnArea, -BurnYear) %>%
+  dplyr::select(-BurnArea, -BurnYear) %>%
   rename(sampID = SampID) %>%
   left_join(read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Means.csv') %>%
-              select(BurnArea, BurnYear, sampID = SampID)) %>%
+              dplyr::select(BurnArea, BurnYear, sampID = SampID)) %>%
   rename(PF_Probability = PFProb, Permeability = PermP, SoilOrganicsCarbon = soc, FireExtent = BurnArea)
 
 target <- 'slope'
-threshold <- "Permanent"
-type <- 'area'
+threshold <- "Seasonal"
+type <- 'frac_area'
 
 feats <- c('PF_Probability','Permeability', 'clay', 'SoilOrganicsCarbon', 'FireExtent', 'sand')
 
 modelInput <- annual %>%
   filter(Threshold == threshold, name == type) %>%
   left_join(sampChar) %>%
-  select(all_of(c('sampID', feats, "slope"))) %>% 
+  mutate(group = ifelse(p.value > 0.05, 1, ifelse(slope > 0, 2, 0))) %>%
+  dplyr::select(all_of(c('sampID', feats, target))) %>% 
   rename(id = sampID) %>% 
-  na.omit()
+  na.omit() 
   
 ```
 
@@ -68,6 +69,9 @@ dtest <- xgb.DMatrix(data = as.matrix(test[,feats]), label = test[,target][[1]])
 
 params <- list(booster = "gbtree", objective = "reg:squarederror", eta=0.1, gamma=0, max_depth=2, min_child_weight=1, subsample=1, colsample_bytree=1)
 
+
+#params <- list(booster = "gbtree", objective = "multi:softmax", eta=0.01, gamma=0, max_depth=2, min_child_weight=1, subsample=1, colsample_bytree=1, num_class = 3)
+
 ## Do a quick cv to check ideal number of folds
 xgbcv <- xgb.cv(params = params, data = dtrain, nrounds = 1000, nfold = 5, showsd = T, stratified = T, print_every_n = 25, early_stopping_round = 10, maximize = F)
 
@@ -85,9 +89,9 @@ Note: We still need to think about is how we want to portray our validation. The
 paste0('Naive Model Hold-out RMSE = ', xgb.naive$best_score)
 paste0('CV RMSE = ', xgbcv$evaluation_log$test_rmse_mean[xgbcv$best_iteration])  
 
-preds <- test %>% mutate(predicted = predict(xgb.naive, dtest))
-                         
 
+preds <- test %>% mutate(predicted = predict(xgb.naive, dtest))
+                       
 ggplot(preds, aes_string(x = target, y = 'predicted')) +
   geom_hex() +
   scale_fill_viridis_c(trans = 'log10') +
@@ -96,7 +100,6 @@ ggplot(preds, aes_string(x = target, y = 'predicted')) +
   ggpmisc::stat_poly_eq(formula = y~x, 
                 aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
                 parse = TRUE)
-
 ```
 
 ## Now lets look at some interpretability metrics, first feature importance and Accumulated Local Effects (ALE) plots
@@ -181,7 +184,15 @@ These are similar to ALE plots, but show the distribution of feature effects acr
 First: we'll look at overall SHAP results for our nine most important features. For SHAP, importance is calculated as those predictors that have the highest cumulative impact across the local models.
 
 ```{r}
-xgb.plot.shap(data = as.matrix(train[,feats]), top_n = 9, n_col = 3, model = xgb.naive)
+check <- xgb.plot.shap(data = as.matrix(train[,feats]), top_n = 9, n_col = 3, model = xgb.naive, plot = F)
+
+df <- as_tibble(check$data) %>% mutate(ID = row_number()) %>% pivot_longer(-ID) %>%
+  left_join(as_tibble(check$shap_contrib) %>% mutate(ID = row_number()) %>% pivot_longer(-ID, values_to = 'SHAP'))
+
+ggplot(df, aes(x = value, y = SHAP)) + geom_point(size = .1) + geom_smooth(se = F) + facet_wrap(~name, scales = 'free')
+
+xgb.ggplot.shap.summary(data = as.matrix(train[,feats]), top_n = 9,  model = xgb.naive)
+
 ```
 
 Then, we'll look at the SHAP summary plot for all predictors. Here, features are ordered by their SHAP importance. Each point on the summary plot is a Shapley value for a feature in one of our observations. The x-axis is it's Shapley value (it's contribution to the model prediction). The color represents the relative value of the feature from low to high.
