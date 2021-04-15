@@ -24,17 +24,18 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 lakes <- read_csv('data/out/AW_GEE_Exports/UCLA_Pick20_3year.csv') %>%
-  select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Ephemeral') %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Ephemeral') %>%
   bind_rows(read_csv('data/out/AW_GEE_Exports/UCLA_Pick50_3year.csv') %>%
-  select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Seasonal')) %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Seasonal')) %>%
   bind_rows(read_csv('data/out/AW_GEE_Exports/UCLA_Pick70_3year.csv') %>%
-  select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Permanent')) %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Permanent')) %>%
   mutate(area = round(area/1e6,5),
          Threshold = factor(Threshold, levels = c('Ephemeral', 'Seasonal', 'Permanent')))
   
 
 sampMeans <- lakes %>% group_by(sampID, Threshold) %>%
-  summarise(Mean_area = mean(area)) %>%
+  summarise(Mean_area = mean(area),
+            count_mean = mean(count)) %>%
   filter(Mean_area > 0) %>%
   mutate(filtID = paste0(Threshold,"_",sampID))
 
@@ -158,9 +159,34 @@ g <- gridExtra::grid.arrange(p1,p2,p3, nrow =3)
 ggsave('figures/Change9Panel_3Year.png', plot = g, width = 8, height = 6, units = 'in')
 ```
 
-## tie the above to sample-characteristic in hydroAtlas
+## tie the above to sample-characteristic
 
 ```{r}
+## Generate climate trends
+clim <- read_csv('data/out/AW_GEE_Exports/SampleClimatology.csv') %>%
+  select(evap = Evaporation_Summer, precip = Precip_Summer, temp = Temp_Summer, year, sampID = SampID) %>%
+  mutate(PEbalance = precip-evap) %>%
+  pivot_longer(-c(year, sampID)) %>%
+  na.omit() %>%
+  arrange(sampID, year) %>%
+  group_by(name, sampID) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
+write_feather(clim, 'data/out/climTrends.feather')  
+
+tp <- tp %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, name,Threshold) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
 sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Medians.csv') %>%
   select(-BurnArea, -BurnYear) %>%
   rename(sampID = SampID) %>%

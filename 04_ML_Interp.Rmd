@@ -31,18 +31,30 @@ sampChar <- sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacterist
               dplyr::select(BurnArea, BurnYear, sampID = SampID)) %>%
   rename(PF_Probability = PFProb, Permeability = PermP, SoilOrganicsCarbon = soc, FireExtent = BurnArea)
 
-target <- 'slope'
-threshold <- "Seasonal"
-type <- 'frac_area'
 
-feats <- c('PF_Probability','Permeability', 'clay', 'SoilOrganicsCarbon', 'FireExtent', 'sand')
+climTrends <- read_feather('data/out/climTrends.feather') %>%
+  dplyr::select(-p.value) %>%
+  pivot_wider(names_from = name, values_from = slope)
+
+terrain <- read_csv('data/out/AW_GEE_Exports/SampleTerrain.csv') %>%
+  rename(sampID = SampID, elevation = mean, elev_sd = sdstdDev)
+
+
+sampChar <- sampChar %>% left_join(climTrends) %>% left_join(terrain) %>% left_join(sampMeans %>% dplyr::select(-filtID))
+
+target <- 'slope'
+threshold <- "Permanent"
+type <- 'frac_area'
+names(sampChar)
+feats <- c('PF_Probability','Permeability', 'clay', 'SoilOrganicsCarbon', 'FireExtent', 'sand', 'PEbalance', 'elevation', 'temp', 'precip', 'elev_sd', 'Mean_area', 'count_mean')
 
 modelInput <- annual %>%
   filter(Threshold == threshold, name == type) %>%
   left_join(sampChar) %>%
   mutate(group = ifelse(p.value > 0.05, 1, ifelse(slope > 0, 2, 0))) %>%
   dplyr::select(all_of(c('sampID', feats, target))) %>% 
-  rename(id = sampID) %>% 
+  rename(id = sampID) %>%
+  filter(slope < 0.03) %>%
   na.omit() 
   
 ```
@@ -67,7 +79,7 @@ dtrain <- xgb.DMatrix(data = as.matrix(train[,feats]), label = train[,target][[1
 dtest <- xgb.DMatrix(data = as.matrix(test[,feats]), label = test[,target][[1]])
 
 
-params <- list(booster = "gbtree", objective = "reg:squarederror", eta=0.1, gamma=0, max_depth=2, min_child_weight=1, subsample=1, colsample_bytree=1)
+params <- list(booster = "gbtree", objective = "reg:squarederror", eta=0.01, gamma=0, max_depth=4, min_child_weight=1, subsample=1, colsample_bytree=1)
 
 
 #params <- list(booster = "gbtree", objective = "multi:softmax", eta=0.01, gamma=0, max_depth=2, min_child_weight=1, subsample=1, colsample_bytree=1, num_class = 3)
@@ -184,12 +196,24 @@ These are similar to ALE plots, but show the distribution of feature effects acr
 First: we'll look at overall SHAP results for our nine most important features. For SHAP, importance is calculated as those predictors that have the highest cumulative impact across the local models.
 
 ```{r}
-check <- xgb.plot.shap(data = as.matrix(train[,feats]), top_n = 9, n_col = 3, model = xgb.naive, plot = F)
+check <- xgb.plot.shap(data = as.matrix(train[,feats]), top_n = 12, n_col = 3, model = xgb.naive, plot = F)
 
 df <- as_tibble(check$data) %>% mutate(ID = row_number()) %>% pivot_longer(-ID) %>%
   left_join(as_tibble(check$shap_contrib) %>% mutate(ID = row_number()) %>% pivot_longer(-ID, values_to = 'SHAP'))
 
 ggplot(df, aes(x = value, y = SHAP)) + geom_point(size = .1) + geom_smooth(se = F) + facet_wrap(~name, scales = 'free')
+
+check <- df %>% group_by(name) %>%
+  summarise(valueMean = mean(value),
+            valueSD = sd(value),
+            shapMean = mean(SHAP),
+            shapSD = sd(SHAP))
+
+df %>%
+  left_join(check) %>%
+  filter(value > valueMean - 4*valueSD & value < valueMean + 4*valueSD,
+         SHAP > shapMean - 4*shapSD & SHAP < shapMean + 4*shapSD) %>%
+  ggplot(aes(x = value, y = SHAP)) + geom_point(size = .1) + geom_smooth(se = F) + facet_wrap(~name, scales = 'free')
 
 xgb.ggplot.shap.summary(data = as.matrix(train[,feats]), top_n = 9,  model = xgb.naive)
 
@@ -202,7 +226,10 @@ library(SHAPforxgboost)
 shap_long <- shap.prep(xgb_model = xgb.naive, X_train = as.matrix(train[,feats]))
 shap.plot.summary(shap_long, x_bound = .005)
 
-shap.plot.dependence(data_long = shap_long, x = 'sand', y = 'sand', color_feature = 'clay')
+shap.plot.dependence(data_long = shap_long, x = 'temp', y = 'temp', color_feature = 'PF_Probability')
+shap.plot.dependence(data_long = shap_long, x = 'clay', y = 'clay', color_feature = 'PF_Probability')
+
+
 ```
 
 With SHAP, we can take any individual observation and see how each input feature contributes to the final prediction as shown below for the first observation in our training dataset. Phi, along the x axis, denotes the impact of each feature to the final prediction. This allows us to look at any individual lake and see how our model is predicting its color.
