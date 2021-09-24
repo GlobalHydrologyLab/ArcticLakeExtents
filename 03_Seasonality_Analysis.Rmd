@@ -9,6 +9,142 @@ editor_options:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+lakes <- read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick30_3year_m.csv') %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first, month = month_first) %>% mutate(Threshold = 'Ephemeral') %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick50_3year_m.csv') %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first, month = month_first) %>% mutate(Threshold = 'Seasonal')) %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick70_3year_m.csv') %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first, month = month_first) %>% mutate(Threshold = 'Permanent')) %>%
+  mutate(area = round(area/1e6,5),
+         Threshold = factor(Threshold, levels = c('Ephemeral', 'Seasonal', 'Permanent')))
+  
+
+sampMeans <- lakes %>% group_by(sampID, Threshold) %>%
+  summarise(Mean_area = mean(area),
+            count_mean = mean(count)) %>%
+  filter(Mean_area > 0.01) %>%
+  mutate(filtID = paste0(Threshold,"_",sampID))
+
+filt <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
+  filter(filtID %in% sampMeans$filtID) %>%
+  group_by(filtID) %>%
+  summarise(count = n()) %>%
+  filter(count > 10)
+
+tp <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
+  filter(filtID %in% filt$filtID) %>%
+  left_join(sampMeans) %>%
+  mutate(frac_area = area/Mean_area) %>%
+  select(-c(filtID, Mean_area)) %>%
+  pivot_longer(c(area, count, frac_area))
+
+
+tp <- tp %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, name, month, Threshold) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
+
+################
+## Check out some random individual timeseries
+# lakeSamp = unique(sampMeans$sampID) %>% sample(.,9)
+# 
+# lakes %>% filter(sampID %in% lakeSamp) %>%
+#   #mutate(Threshold = factor(Threshold, levels = c('area30','area50','area70'), labels = c('Ephemeral', 'Seasonal','Permanent'))) %>% 
+#   ggplot(aes(x = year, y = area, color = Threshold)) + geom_line() +
+#   labs(title = 'Example time series for three random sample sites', x = 'Year', y = 'Area (sq km)') +
+#   theme_bw() +
+#   theme(legend.position = 'bottom',
+#         axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+#   facet_wrap(~sampID, scales = 'free')
+  
+
+write_feather(tp, 'data/out/Trends_Pick_Full.feather')
+```
+
+# Look at the trends spatially.
+
+```{r}
+tp <- read_feather('data/out/Trends_Pick_Full.feather')
+
+samps.sf <- st_read('data/out/grid_samp/ArcticGridSamp.shp') %>%
+  select(sampID = SampID) %>%
+  rbind(st_read('data/out/grid_samp/nonPFsamp.shp') %>%
+  select(sampID = SampID))
+
+
+arctic <- st_as_sf(maps::map("world", plot = FALSE, fill = TRUE, ylim = c(55,90))) %>%
+  st_transform(st_crs(samps.sf))
+
+plotter <- function(var, thresh){
+  tp %>%
+    filter(name == var) %>%
+    mutate(slope = ifelse(slope > thresh, thresh, ifelse(slope < -1*thresh, -1*thresh, slope))) %>%
+    left_join(samps.sf) %>%
+    st_as_sf() %>%
+    ggplot() +
+      geom_sf(data = arctic) +
+      geom_sf(aes(color = slope, fill = slope)) +
+      labs(title = var) +
+      facet_grid(Threshold~month)
+}
+
+p1 <- plotter('count', .5) + 
+  scale_color_gradient2(mid = 'grey80', 
+                        breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
+                        labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
+      scale_fill_gradient2(mid = 'grey80', 
+                           breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
+                        labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
+  labs(title = expression(Lake~Count~(n~yr^-1 )), 
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'right')
+
+#p1
+
+#ggsave('figures/countTrends.png', width = 6, height = 2.5, units = 'in')
+
+p2 <- plotter('area', .1) + 
+  scale_color_gradient2(mid = 'grey80', 
+                        breaks = c(-0.1,-0.05, 0, 0.05,0.1), 
+                        labels = c('<-0.1', -0.05, 0, 0.05, '>0.1')) +
+      scale_fill_gradient2(mid = 'grey80', 
+                           breaks = c(-0.1,-0.05, 0, 0.05,0.1), 
+                        labels = c('<-0.1', -0.05, 0, 0.05, '>0.1')) +
+  labs(title = expression(Area~Change~(km^2~yr^-1 )), 
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'right')
+
+p2
+#ggsave('figures/areaTrends.png', width = 6, height = 2.5, units = 'in')
+
+p3 <- plotter('frac_area',0.02) + 
+  scale_color_gradient2(mid = 'grey80',  
+                        breaks = c(-0.02,-0.01, 0, 0.01,0.02), 
+                        labels = c('<-1%', "-0.5%", "0%", "0.5%", '>1%')) +
+  scale_fill_gradient2(mid = 'grey80',
+                       breaks = c(-0.02,-0.01, 0, 0.01,0.02), 
+                       labels = c('<-1%', "-0.5%", "0%", "0.5%", '>1%')) +
+  labs(title = expression(Fractional~Change~(percent~yr^-1 )),
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'right')
+
+p3
+#ggsave('figures/Frac_areaTrends.png', width = 6, height = 2.5, units = 'in')
+
+ggsave('figures/Change9Panel_3Year.png', plot = g, width = 8, height = 6, units = 'in')
+```
+
+
+
 ## Pull sample areas with decreasing areas to look at seasonality
 
 ```{r}

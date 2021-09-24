@@ -23,11 +23,11 @@ knitr::opts_chunk$set(echo = TRUE)
 ## Look at sample site fractional changes in water area
 
 ```{r}
-lakes <- read_csv('data/out/AW_GEE_Exports/UCLA_Pick20_3year.csv') %>%
+lakes <- read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick30_3year.csv') %>%
   dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Ephemeral') %>%
-  bind_rows(read_csv('data/out/AW_GEE_Exports/UCLA_Pick50_3year.csv') %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick50_3year.csv') %>%
   dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Seasonal')) %>%
-  bind_rows(read_csv('data/out/AW_GEE_Exports/UCLA_Pick70_3year.csv') %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick70_3year.csv') %>%
   dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Permanent')) %>%
   mutate(area = round(area/1e6,5),
          Threshold = factor(Threshold, levels = c('Ephemeral', 'Seasonal', 'Permanent')))
@@ -36,7 +36,7 @@ lakes <- read_csv('data/out/AW_GEE_Exports/UCLA_Pick20_3year.csv') %>%
 sampMeans <- lakes %>% group_by(sampID, Threshold) %>%
   summarise(Mean_area = mean(area),
             count_mean = mean(count)) %>%
-  filter(Mean_area > 0) %>%
+  filter(Mean_area > 0.01) %>%
   mutate(filtID = paste0(Threshold,"_",sampID))
 
 filt <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
@@ -65,10 +65,10 @@ tp <- tp %>%
 
 ################
 ## Check out some random individual timeseries
-lakeSamp = unique(lakes$sampID) %>% sample(.,3)
+lakeSamp = unique(sampMeans$sampID) %>% sample(.,9)
 
 lakes %>% filter(sampID %in% lakeSamp) %>%
-  mutate(Threshold = factor(Threshold, levels = c('area20','area50','area70'), labels = c('Ephemeral', 'Seasonal','Permanent'))) %>% 
+  #mutate(Threshold = factor(Threshold, levels = c('area30','area50','area70'), labels = c('Ephemeral', 'Seasonal','Permanent'))) %>% 
   ggplot(aes(x = year, y = area, color = Threshold)) + geom_line() +
   labs(title = 'Example time series for three random sample sites', x = 'Year', y = 'Area (sq km)') +
   theme_bw() +
