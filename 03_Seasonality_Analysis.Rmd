@@ -6,6 +6,15 @@ editor_options:
 ---
 
 ```{r setup, include=FALSE}
+library(tidyverse)
+library(mapview)
+library(sf)
+library(feather)
+library(furrr)
+library(trend)
+library(tictoc)
+
+
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -143,6 +152,56 @@ p3
 ggsave('figures/Change9Panel_3Year.png', plot = g, width = 8, height = 6, units = 'in')
 ```
 
+## Pull in monthly climate data
+
+```{r}
+clim <- read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick_Monthly_Clim.csv') %>%
+  select(sampID = SampID, month, year, swrad = surface_net_solar_radiation, evap = total_evaporation, precip = total_precipitation, temp = temperature_2m)
+
+
+tp <- clim %>% 
+  mutate(p_e = precip+evap) %>%
+  na.omit() %>%
+  pivot_longer(-c(sampID,month, year)) %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, name, month) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
+
+plotter <- function(var, thresh){
+  tp %>%
+    filter(name == var) %>%
+    mutate(slope = ifelse(slope > thresh, thresh, ifelse(slope < -1*thresh, -1*thresh, slope))) %>%
+    left_join(samps.sf) %>%
+    st_as_sf() %>%
+    ggplot() +
+      geom_sf(data = arctic) +
+      geom_sf(aes(color = slope, fill = slope)) +
+      labs(title = var) +
+      facet_wrap(~month)
+}
+
+plotter('p_e', 100) + scale_color_gradient2(mid = 'grey80') +
+      scale_fill_gradient2(mid = 'grey80')
+
+p1 <- plotter('count', .5) + 
+  scale_color_gradient2(mid = 'grey80', 
+                        breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
+                        labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
+      scale_fill_gradient2(mid = 'grey80', 
+                           breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
+                        labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
+  labs(title = expression(Lake~Count~(n~yr^-1 )), 
+       fill = 'Trend', color = 'Trend') +
+  ggthemes::theme_map() +
+  theme(legend.position = 'right')
+
+
+```
 
 
 ## Pull sample areas with decreasing areas to look at seasonality
@@ -175,6 +234,11 @@ pos.seasonal %>% inner_join(samps.sf) %>% st_as_sf() %>% mapview()
 paste(pos.seasonal$sampID, collapse = ', ')
 
 ```
+
+
+
+
+
 
 ```{r}
 Clim <- read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year_500_Pick70.csv') %>%
