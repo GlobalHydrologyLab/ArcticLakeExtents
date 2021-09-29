@@ -73,7 +73,7 @@ tp <- tp %>%
 #   facet_wrap(~sampID, scales = 'free')
   
 
-write_feather(tp, 'data/out/Trends_Pick_Full.feather')
+write_feather(tp, 'data/out/Trends_Pick_Monthly.feather')
 ```
 
 # Look at the trends spatially.
@@ -171,6 +171,12 @@ tp <- clim %>%
          p.value = map_dbl(sens, 'p.value')) %>%
   select(-data,-sens)
 
+write_feather(tp, 'data/out/climTrendsMonthly.feather')
+```
+
+
+```{r}
+tp <- read_feather('data/out/climTrendsMonthly.feather')
 
 plotter <- function(var, thresh){
   tp %>%
@@ -183,9 +189,9 @@ plotter <- function(var, thresh){
       geom_sf(aes(color = slope, fill = slope)) +
       labs(title = var) +
       facet_wrap(~month)
-}
+  }
 
-plotter('p_e', 100) + scale_color_gradient2(mid = 'grey80') +
+plotter('swrad', 100) + scale_color_gradient2(mid = 'grey80') +
       scale_fill_gradient2(mid = 'grey80')
 
 p1 <- plotter('count', .5) + 
@@ -203,147 +209,69 @@ p1 <- plotter('count', .5) +
 
 ```
 
-
-## Pull sample areas with decreasing areas to look at seasonality
-
+#### Look at variance between lakes
 ```{r}
-set.seed(8464)
-neg.seasonal <- tp %>% filter(name == 'frac_area', 
-                              slope < 0, 
-                              #p.value < 0.1,
-                              Threshold == 'area70') %>%
-  ungroup() %>%
-  slice_sample(n = 500)
+lakeSumm <- function(file){
+  out <- read_csv(file) %>%
+    select(area = area_sum, sampID = first, lakeID = label, month = month_first, year = year_first) %>%
+    group_by(sampID, lakeID, month, year) %>%
+    summarise(area = sum(area))
+  return(out)
+}
 
-neg.seasonal %>% inner_join(samps.sf) %>% st_as_sf() %>% mapview()
+lakes <- lakeSumm('data/out/AW_GEE_Exports_2020/UCLA_Pick30_3year_m_Var.csv') %>% mutate(Threshold = "Ephemeral") %>%
+  bind_rows(lakeSumm('data/out/AW_GEE_Exports_2020/UCLA_Pick50_3year_m_Var.csv')  %>% mutate(Threshold = 'Seasonal')) %>%
+  bind_rows(lakeSumm('data/out/AW_GEE_Exports_2020/UCLA_Pick70_3year_m_Var.csv')%>% mutate(Threshold = 'Permanent')) %>%
+  mutate(area = round(area/1e6,5),
+         Threshold = factor(Threshold, levels = c('Ephemeral', 'Seasonal', 'Permanent')))
 
-## put um into EE
-paste(neg.seasonal$sampID, collapse = ', ')
+sampMeans <- lakes %>% group_by(sampID, Threshold) %>%
+  summarise(Mean_area = mean(area),
+            count_mean = mean(count)) %>%
+  filter(Mean_area > 0.01) %>%
+  mutate(filtID = paste0(Threshold,"_",sampID))
 
-set.seed(8464)
-pos.seasonal <- tp %>% filter(name == 'frac_area', 
-                              slope > 0, 
-                              #p.value < 0.1,
-                              Threshold == 'area70') %>%
-  ungroup() %>%
-  slice_sample(n = 500)
+filt <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
+  filter(filtID %in% sampMeans$filtID) %>%
+  group_by(filtID) %>%
+  summarise(count = n()) %>%
+  filter(count > 10)
 
-pos.seasonal %>% inner_join(samps.sf) %>% st_as_sf() %>% mapview()
+tp <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
+  filter(filtID %in% filt$filtID)
 
-## put um into EE
-paste(pos.seasonal$sampID, collapse = ', ')
 
+tp <- tp %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, month, Threshold, lakeID) %>%
+  mutate(count = n()) %>%
+  filter(count > 10) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$area)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
+write_feather(tp,'data/outPickMonthlyLakeLevelTimeSeries.feather')
 ```
 
 
-
-
-
-
 ```{r}
-Clim <- read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year_500_Pick70.csv') %>%
-  select(area = sum,precip =  PrecipE_mean ,temp = TempE_mean, 
-         sampID = SampID, month) %>%
-  pivot_longer(-c(sampID, month)) %>%
-  mutate(period = '2000-2006') %>%
-  full_join(
-    read_csv('data/out/AW_GEE_Exports/AreaGainClimatologies6year_500_Pick70.csv') %>%
-     select(area = Latesum,precip =  PrecipL_mean ,temp = TempL_mean, 
-           sampID = SampID, month) %>%
-      pivot_longer(-c(sampID, month)) %>%
-      mutate(period = '2014-2019')
-  ) %>% mutate(trend = 'Positive')
-  
-Clim <- Clim %>%
-  bind_rows(
-    read_csv('data/out/AW_GEE_Exports/AreaLossClimatologies6year_500_Pick70.csv') %>%
-      select(area = sum, precip =  PrecipE_mean ,temp = TempE_mean, 
-             sampID = SampID, month) %>%
-      pivot_longer(-c(sampID, month)) %>%
-      mutate(period = '2000-2006') %>%
-      full_join(
-        read_csv('data/out/AW_GEE_Exports/AreaLossClimatologies6year_500_Pick70.csv') %>%
-         select(area = Latesum,precip =  PrecipL_mean ,temp = TempL_mean, 
-               sampID = SampID, month) %>%
-          pivot_longer(-c(sampID, month)) %>%
-          mutate(period = '2014-2019')) %>% 
-          mutate(trend = 'Negative'))
-  
-ggplot(Clim %>% filter(name == 'temp'), aes(x = month, y = value, color = period)) +
-  geom_jitter(alpha = .05) +
-  geom_smooth() +
-  scale_colour_viridis_d(end = .5) +
-  facet_wrap(~trend) +
-  theme_bw()
-  
-ClimDiffs = Clim %>%
-  pivot_wider(names_from = period, values_from = value) %>%
-  mutate(diff = `2014-2019`-`2000-2006`)
+tp <- read_feather('data/outPickMonthlyLakeLevelTimeSeries.feather')
 
-ClimDiffs %>% filter(name == 'temp') %>%
-  ggplot(aes(x = diff, fill = trend)) +
-  geom_density(alpha = .2) + coord_cartesian(xlim = c(-6,6))
+tp_sum <- tp %>% mutate(inc = ifelse(slope >0,1,0),
+                    dec = ifelse(slope < 0, 1,0)) %>%
+  group_by(sampID, month, Threshold) %>%
+  summarize(count = n(),
+            n_inc = sum(inc),
+            n_dec = sum(dec),
+            frac_inc = n_inc/count,
+            frac_dec = n_dec/count)
 
-ggplot(ClimDiffs, aes(x = factor(month), y = diff)) +
-  geom_violin() +
-  geom_boxplot(width = .1) +
-  geom_hline(yintercept =  0, color = 'red') +
-  facet_grid(name~trend, scales = 'free')
+ggplot(tp_sum, aes(x=frac_dec)) +
+  geom_density() +
+  facet_grid(Threshold~month)
 
-climScaled <- Clim %>%
-  filter(value != 0, month %in% c(6:10)) %>%
-  group_by(sampID, name) %>%
-  mutate(value = scale(value)) %>%
-  ungroup()
-
-
-ggplot(climScaled,# %>% filter(month %in% c(5:10)), 
-       aes(x = month, y = value, color = period))  +
-  geom_jitter(alpha = .01) +
-  geom_smooth(method = 'loess') +
-  scale_colour_viridis_d(end = .5) +
-  facet_grid(name~trend, scales = 'free') +
-  theme_bw() +
-  labs(x = 'Month', y = 'Value (z-normalized)', title = 'Climatologies')
-
-ggsave('figures/climatologies500.png', width = 4.5, height = 4, units = 'in')
-
-ggplot(climScaled,# %>% filter(month %in% c(5:10)), 
-       aes(x = factor(month), y = value, fill = trend))  +
-  geom_boxplot() +
-  #scale_fill_viridis_d(end = .5) +
-  facet_grid(name~period, scales = 'free') +
-  theme_bw()
-
-ggsave('figures/Seasonality_500.png', width = 6, height = 4, units = 'in')
-
-ClimDiffs %>% filter(month %in% c(6,7), name == 'precip') %>%
-  ggplot(aes(x = factor(month), y = diff, fill = trend)) +
-  #geom_violin() +
-  geom_boxplot(width = .1) +
-  geom_hline(yintercept =  0, color = 'red') +
-  facet_wrap(~trend, scales = 'free')
-
-
-climScaled %>%
-  group_by(name, month, trend, period) %>%
-  summarise(med = median(value, na.rm = T),
-            quart1 = quantile(value, .25, na.rm =T),
-            quart3 = quantile(value, .75,na.rm =T)) %>%
-  ggplot(aes(x = month)) +
-  geom_point(aes(y = med, color = period)) +
-  geom_errorbar(aes(ymin = quart1, ymax = quart3, color = period)) +
-  facet_grid(name~trend, scales = 'free')
-
-
-
-climScaled %>%
-  group_by(name, month, trend, period) %>%
-  summarise(mean = mean(value, na.rm = T),
-            sd = sd(value, na.rm = T)) %>%
-  ggplot(aes(x = month)) +
-  geom_point(aes(y = mean, color = period)) +
-  geom_errorbar(aes(ymin = mean - sd, ymax = mean + sd, color = period)) +
-  facet_grid(name~trend, scales = 'free')
-
+tp_sum %>% group_by()
 ```
+

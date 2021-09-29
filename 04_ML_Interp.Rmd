@@ -2,7 +2,7 @@
 title: "04_InterpModel"
 output: html_document
 editor_options: 
-  chunk_output_type: console
+  chunk_output_type: inline
 ---
 
 ```{r setup, include=FALSE}
@@ -11,6 +11,7 @@ library(xgboost)
 library(Metrics)
 library(gridExtra)
 library(feather)
+library(lubridate)
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -21,10 +22,10 @@ This is an R Markdown document. Markdown is a simple formatting syntax for autho
 When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
 ```{r cars}
-monthly <- read_feather('data/out/Trends_Monthly_Pick_Full.feather')
-annual <- read_feather('data/out/Trends_Pick_Full.feather')
+monthly <- read_feather('data/out/Trends_Pick_Monthly.feather')
+#annual <- read_feather('data/out/Trends_Pick_Full.feather')
 
-sampChar <- sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Medians.csv') %>%
+sampAtts <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Medians.csv') %>%
   dplyr::select(-BurnArea, -BurnYear) %>%
   rename(sampID = SampID) %>%
   left_join(read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Means.csv') %>%
@@ -32,7 +33,7 @@ sampChar <- sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacterist
   rename(PF_Probability = PFProb, Permeability = PermP, SoilOrganicsCarbon = soc, FireExtent = BurnArea)
 
 
-climTrends <- read_feather('data/out/climTrends.feather') %>%
+climTrends <- read_feather('data/out/climTrendsMonthly.feather') %>%
   dplyr::select(-p.value) %>%
   pivot_wider(names_from = name, values_from = slope)
 
@@ -40,23 +41,16 @@ terrain <- read_csv('data/out/AW_GEE_Exports/SampleTerrain.csv') %>%
   rename(sampID = SampID, elevation = mean, elev_sd = sdstdDev)
 
 
-sampChar <- sampChar %>% left_join(climTrends) %>% left_join(terrain) %>% left_join(sampMeans %>% dplyr::select(-filtID))
-
-target <- 'slope'
+target <- 'group'
 threshold <- "Permanent"
 type <- 'frac_area'
+#month_target <- 6
 names(sampChar)
-feats <- c('PF_Probability','Permeability', 'clay', 'SoilOrganicsCarbon', 'FireExtent', 'sand', 'PEbalance', 'elevation', 'temp', 'precip', 'elev_sd', 'Mean_area', 'count_mean')
+feats <- c('PF_Probability','Permeability', 'Porosity', 'clay', 'SoilOrganicsCarbon', 'FireExtent', 'sand', 'swrad', 'p_e', 'temp', 'precip', 'evap', 'elevation', 'elev_sd')
 
-modelInput <- annual %>%
-  filter(Threshold == threshold, name == type) %>%
-  left_join(sampChar) %>%
-  mutate(group = ifelse(p.value > 0.05, 1, ifelse(slope > 0, 2, 0))) %>%
-  dplyr::select(all_of(c('sampID', feats, target))) %>% 
-  rename(id = sampID) %>%
-  filter(slope < 0.03) %>%
-  na.omit() 
-  
+#sampChar <- sampChar %>% left_join(climTrends %>% filter(month == month_target)) %>% left_join(terrain) #%>% left_join(sampMeans %>% dplyr::select(-filtID))
+
+
 ```
 
 
@@ -71,23 +65,88 @@ Below, we train our model until the validation rmse stops improving. This avoids
 Note: Ultimately, we should probably decide on only one modeling approach.  All the interpretability metrics I use here are model agnostic, meaning we can apply them to random forest, xgboost, etc.
 
 ```{r}
-set.seed(2423)
-train <- modelInput %>% sample_frac(.7)
-test <- modelInput %>% filter(!id %in% train$id)
+shap_out <- tibble(ID = integer(), name = character(), value = numeric(), SHAP = numeric(), month = integer())
 
-dtrain <- xgb.DMatrix(data = as.matrix(train[,feats]), label = train[,target][[1]])
-dtest <- xgb.DMatrix(data = as.matrix(test[,feats]), label = test[,target][[1]])
+month_target <- 6
 
+for(month_target in c(6,7,8,9)){
+sampChar <- sampAtts %>% left_join(climTrends %>% filter(month == month_target)) %>% left_join(terrain) #%>% left_join(sampMeans %>% dplyr::select(-filtID))
 
-params <- list(booster = "gbtree", objective = "reg:squarederror", eta=0.01, gamma=0, max_depth=4, min_child_weight=1, subsample=1, colsample_bytree=1)
+  modelInput <- monthly %>%
+    filter(Threshold == threshold, name == type, month==month_target) %>%
+    left_join(sampChar) %>%
+    mutate(group = ifelse(slope > 0, 1, 0)) %>%
+    dplyr::select(all_of(c('sampID', feats, target, 'p.value'))) %>% 
+    rename(id = sampID) %>%
+    #filter(abs(slope) < 0.1) %>%
+    na.omit()
+    
+  set.seed(2423)
+  if(target == 'group'){
+    modelInput = modelInput %>% filter(p.value < 0.05)
+  }
+  train <- modelInput %>% sample_frac(.7)
+  test <- modelInput %>% filter(!id %in% train$id)
+  
+  dtrain <- xgb.DMatrix(data = as.matrix(train[,feats]), label = train[,target][[1]])
+  dtest <- xgb.DMatrix(data = as.matrix(test[,feats]), label = test[,target][[1]])
+  
+  if(target == 'slope'){
+    params <- list(booster = "gbtree", objective = "reg:squarederror", eta=0.01, gamma=0, max_depth=4, min_child_weight=1, subsample=1, colsample_bytree=1)
+    xgb.naive <- xgb.train(params = params, data = dtrain, nrounds = 1000, watchlist = list(train = dtrain, val = dtest), print_every_n = 25, early_stopping_rounds = 10, maximize = F)
+    preds <-  test %>% mutate(predicted = predict(xgb.naive, dtest))
+    }
+    #params <- list(booster = "gbtree", objective = "multi:softmax", eta=0.01, gamma=0, max_depth=2, min_child_weight=1, subsample=1, colsample_bytree=1, num_class = 3)
+  ## Do a quick cv to check ideal number of folds
+  #xgbcv <- xgb.cv(params = params, data = dtrain, nrounds = 1000, nfold = 5, showsd = T, stratified = T, print_every_n = 25, early_stopping_round = 10, maximize = F)
+  
+  if(target == 'group'){
+    params <- list(booster = "gbtree", objective = "binary:logistic", eta=0.01, gamma=0, max_depth=2, min_child_weight=1, subsample=1, colsample_bytree=1)
+    xgb.naive <- xgb.train(params = params, data = dtrain, nrounds = 2000, watchlist = list(train = dtrain, val = dtest), print_every_n =100, early_stopping_rounds = 10)
+    preds <- test %>% mutate(predicted = as.numeric(predict(xgb.naive, dtest)>0.5))
+    err <- mean(as.numeric(preds$predicted > 0.5) != preds$group)
+    auc <- Metrics::auc(preds$group, preds$predicted)
+  }
+  
+  check <- xgb.plot.shap(data = as.matrix(train[,feats]), top_n = 14, n_col = 3, model = xgb.naive, plot = F)
+  
+  df <- as_tibble(check$data) %>% mutate(ID = row_number()) %>% pivot_longer(-ID) %>%
+    left_join(as_tibble(check$shap_contrib) %>% mutate(ID = row_number()) %>% pivot_longer(-ID, values_to = 'SHAP')) %>%
+    mutate(month = month_target)
+  shap_out <- shap_out %>% bind_rows(df)
+  
+  #p1<- ggplot(df, aes(x = value, y = SHAP)) + geom_point(size = .1) + geom_smooth(se = F) + facet_wrap(~name, scales = 'free') + ggtitle(month_target)
+  
+  p2 <- xgb.ggplot.shap.summary(data = as.matrix(train[,feats]), top_n = 9,  model = xgb.naive) + ggtitle(paste(month_target, '  error:',round(err,3),'  auc: ',round(auc,3)))
+  #print(p1)
+  print(p2)
+  #importance_matrix <- xgb.importance(colnames(train[,feats]), model = xgb.naive)
 
+  #xgb.plot.importance(importance_matrix, rel_to_first = TRUE, xlab = "Relative importance")
+}
+```
+```{r}
+vars = c('elevation', 'SoilOrganicsCarbon', 'clay', 'PF_Probability', 'swrad', 'temp', 'precip', 'FireExtent')
+vars <- c('clay', 'elevation', 'FireExtent', 'PF_Probability', 'SoilOrganicsCarbon')
+renamer <- c('Clay Content', 'Elevation', 'Percent Burn Area', 'Permafrost Extent', 'Soil Organic Carbon')
+renamer <- tibble(name = vars, name_new = renamer)
+shap_out %>%
+  filter(name %in% vars) %>%
+  left_join(renamer) %>% 
+  group_by(name, month) %>%
+  mutate(value_scaled = scale(value)) %>%
+  ungroup() %>%
+  mutate(month = month(month, label = T)) %>%
+  filter(value_scaled < 3) %>%
+  ggplot(aes(x = value, y = SHAP, color = month)) + 
+  geom_point(size = .1, alpha=.3) +
+  scale_color_viridis_d(option = 'mako', end = .7) + geom_smooth(se = F) + 
+  facet_wrap(~name_new, scales = 'free') +
+  theme_bw() +
+  theme(legend.position = c(.8,.25)) +
+  labs(x= 'Feature Value', y = 'Impact to Model Prediction (SHAP)', color = 'Month')
 
-#params <- list(booster = "gbtree", objective = "multi:softmax", eta=0.01, gamma=0, max_depth=2, min_child_weight=1, subsample=1, colsample_bytree=1, num_class = 3)
-
-## Do a quick cv to check ideal number of folds
-xgbcv <- xgb.cv(params = params, data = dtrain, nrounds = 1000, nfold = 5, showsd = T, stratified = T, print_every_n = 25, early_stopping_round = 10, maximize = F)
-
-xgb.naive <- xgb.train(params = params, data = dtrain, nrounds = 1000, watchlist = list(train = dtrain, val = dtest), print_every_n = 25, early_stopping_rounds = 10, maximize = F)
+ggsave('figures/SHAPMonthly.png', width = 6.5, height = 4, units = 'in')
 ```
 
 #### We want our CV RMSE to roughly equal our holdout RMSE, if holdout is much lower we might be overfitting.
@@ -99,7 +158,7 @@ Note: We still need to think about is how we want to portray our validation. The
 
 ```{r, eval = F}
 paste0('Naive Model Hold-out RMSE = ', xgb.naive$best_score)
-paste0('CV RMSE = ', xgbcv$evaluation_log$test_rmse_mean[xgbcv$best_iteration])  
+#paste0('CV RMSE = ', xgbcv$evaluation_log$test_rmse_mean[xgbcv$best_iteration])  
 
 
 preds <- test %>% mutate(predicted = predict(xgb.naive, dtest))
