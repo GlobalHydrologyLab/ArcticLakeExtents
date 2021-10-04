@@ -23,47 +23,37 @@ knitr::opts_chunk$set(echo = TRUE)
 ## Look at sample site fractional changes in water area
 
 ```{r}
-lakes <- read_feather('data/out/Pick_Munged_Full.feather')
-
-
-## Check out some random individual timeseries
-lakeSamp = unique(lakes$sampID) %>% sample(.,20)
-
-lakes %>% filter(sampID %in% lakeSamp) %>%
-  select(sampID, year, area20,area50,area70,area90) %>%
-  pivot_longer(-c(sampID,year), names_to = 'Threshold', values_to = 'area') %>%
-  na.omit() %>%
-  group_by(sampID, year, Threshold) %>%
-  summarise(area = sum(area)) %>%
-  ggplot(aes(x = year, y = area, color = Threshold)) + geom_line() +
-  facet_wrap(~sampID, scales = 'free')
+lakes <- read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick30_3year.csv') %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Ephemeral') %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick50_3year.csv') %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Seasonal')) %>%
+  bind_rows(read_csv('data/out/AW_GEE_Exports_2020/UCLA_Pick70_3year.csv') %>%
+  dplyr::select(sampID = SampID, area = area_sum, count, year = year_first) %>% mutate(Threshold = 'Permanent')) %>%
+  mutate(area = round(area/1e6,5),
+         Threshold = factor(Threshold, levels = c('Ephemeral', 'Seasonal', 'Permanent')))
   
 
-sampMeans <- lakes %>% group_by(sampID,year) %>%
-  summarise_at(vars(area20,area50,area70,area90),sum, na.rm = T) %>%
-  group_by(sampID) %>%
-  summarise_at(vars(area20,area50,area70,area90),  mean, na.rm = T) %>%
-  ungroup() %>%
-  pivot_longer(-sampID, names_to = 'Threshold', values_to = 'Mean_Area')
+sampMeans <- lakes %>% group_by(sampID, Threshold) %>%
+  summarise(Mean_area = mean(area),
+            count_mean = mean(count)) %>%
+  filter(Mean_area > 0.01) %>%
+  mutate(filtID = paste0(Threshold,"_",sampID))
 
-tp <- lakes %>% select(sampID, year, area20,area50,area70,area90) %>%
-  pivot_longer(-c(sampID,year), names_to = 'Threshold', values_to = 'area') %>%
-  na.omit() %>%
-  group_by(sampID, year, Threshold) %>%
-  summarise(count = n(),
-            area = sum(area)) %>%
+filt <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
+  filter(filtID %in% sampMeans$filtID) %>%
+  group_by(filtID) %>%
+  summarise(count = n()) %>%
+  filter(count > 10)
+
+tp <- lakes %>% mutate(filtID = paste0(Threshold,'_',sampID)) %>%
+  filter(filtID %in% filt$filtID) %>%
   left_join(sampMeans) %>%
-  mutate(frac_area = area/Mean_Area) %>%
-  select(-Mean_Area)
+  mutate(frac_area = area/Mean_area) %>%
+  select(-c(filtID, Mean_area)) %>%
+  pivot_longer(c(area, count, frac_area))
 
-filt <- tp %>% group_by(sampID, Threshold) %>% summarise(count = n()) %>%
-  filter(count > 10) %>%
-  mutate(filtID = paste0(Threshold, sampID))
 
 tp <- tp %>%
-  mutate(filtID = paste0(Threshold, sampID)) %>%
-  filter(filtID %in% filt$filtID) %>% select(-filtID) %>%
-  pivot_longer(-c(sampID,year,Threshold)) %>%
   arrange(sampID, year) %>%
   group_by(sampID, name,Threshold) %>%
   nest() %>%
@@ -71,6 +61,21 @@ tp <- tp %>%
          slope = purrr::map_dbl(sens, 'estimates'),
          p.value = map_dbl(sens, 'p.value')) %>%
   select(-data,-sens)
+
+
+################
+## Check out some random individual timeseries
+lakeSamp = unique(sampMeans$sampID) %>% sample(.,9)
+
+lakes %>% filter(sampID %in% lakeSamp) %>%
+  #mutate(Threshold = factor(Threshold, levels = c('area30','area50','area70'), labels = c('Ephemeral', 'Seasonal','Permanent'))) %>% 
+  ggplot(aes(x = year, y = area, color = Threshold)) + geom_line() +
+  labs(title = 'Example time series for three random sample sites', x = 'Year', y = 'Area (sq km)') +
+  theme_bw() +
+  theme(legend.position = 'bottom',
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  facet_wrap(~sampID, scales = 'free')
+  
 
 write_feather(tp, 'data/out/Trends_Pick_Full.feather')
 ```
@@ -89,12 +94,10 @@ samps.sf <- st_read('data/out/grid_samp/ArcticGridSamp.shp') %>%
 arctic <- st_as_sf(maps::map("world", plot = FALSE, fill = TRUE, ylim = c(55,90))) %>%
   st_transform(st_crs(samps.sf))
 
-plotter <- function(var){
+plotter <- function(var, thresh){
   tp %>%
     filter(name == var) %>%
-    mutate(slope = ifelse(slope > 0.01, 0.01, ifelse(slope < -0.01, -0.01, slope))) %>%
-    #mutate(slope = ifelse(slope > 0.1, 0.1, ifelse(slope < -0.1, -0.1, slope))) %>%
-    #mutate(slope = ifelse(slope > .5, .5, ifelse(slope < -.5, -.5, slope))) %>%
+    mutate(slope = ifelse(slope > thresh, thresh, ifelse(slope < -1*thresh, -1*thresh, slope))) %>%
     left_join(samps.sf) %>%
     st_as_sf() %>%
     ggplot() +
@@ -104,7 +107,7 @@ plotter <- function(var){
       facet_wrap(~Threshold, nrow = 1)
 }
 
-p1 <- plotter('count') + 
+p1 <- plotter('count', .5) + 
   scale_color_gradient2(mid = 'grey80', 
                         breaks = c(-0.5, -0.25, 0, 0.25, 0.5), 
                         labels = c('<-0.5', -0.25, 0, 0.25, '>0.5')) +
@@ -116,12 +119,11 @@ p1 <- plotter('count') +
   ggthemes::theme_map() +
   theme(legend.position = 'right')
 
-p1
+#p1
 
-ggsave('figures/countTrends.png', width = 6, height = 2.5, units = 'in')
+#ggsave('figures/countTrends.png', width = 6, height = 2.5, units = 'in')
 
-
-p2 <- plotter('area') + 
+p2 <- plotter('area', .1) + 
   scale_color_gradient2(mid = 'grey80', 
                         breaks = c(-0.1,-0.05, 0, 0.05,0.1), 
                         labels = c('<-0.1', -0.05, 0, 0.05, '>0.1')) +
@@ -133,10 +135,10 @@ p2 <- plotter('area') +
   ggthemes::theme_map() +
   theme(legend.position = 'right')
 
-p2
-ggsave('figures/areaTrends.png', width = 6, height = 2.5, units = 'in')
+#p2
+#ggsave('figures/areaTrends.png', width = 6, height = 2.5, units = 'in')
 
-p3 <- plotter('frac_area') + 
+p3 <- plotter('frac_area',0.01) + 
   scale_color_gradient2(mid = 'grey80',  
                         breaks = c(-0.01,-0.005, 0, 0.005,0.01), 
                         labels = c('<-1%', "-0.5%", "0%", "0.5%", '>1%')) +
@@ -148,18 +150,43 @@ p3 <- plotter('frac_area') +
   ggthemes::theme_map() +
   theme(legend.position = 'right')
 
-p3
-ggsave('figures/Frac_areaTrends.png', width = 6, height = 2.5, units = 'in')
+#p3
+#ggsave('figures/Frac_areaTrends.png', width = 6, height = 2.5, units = 'in')
 
 
 g <- gridExtra::grid.arrange(p1,p2,p3, nrow =3)
 
-ggsave('figures/Change12Panel.png', plot = g, width = 8, height = 6, units = 'in')
+ggsave('figures/Change9Panel_3Year.png', plot = g, width = 8, height = 6, units = 'in')
 ```
 
-## tie the above to sample-characteristic in hydroAtlas
+## tie the above to sample-characteristic
 
 ```{r}
+## Generate climate trends
+clim <- read_csv('data/out/AW_GEE_Exports/SampleClimatology.csv') %>%
+  select(evap = Evaporation_Summer, precip = Precip_Summer, temp = Temp_Summer, year, sampID = SampID) %>%
+  mutate(PEbalance = precip-evap) %>%
+  pivot_longer(-c(year, sampID)) %>%
+  na.omit() %>%
+  arrange(sampID, year) %>%
+  group_by(name, sampID) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
+write_feather(clim, 'data/out/climTrends.feather')  
+
+tp <- tp %>%
+  arrange(sampID, year) %>%
+  group_by(sampID, name,Threshold) %>%
+  nest() %>%
+  mutate(sens = purrr::map(data, ~trend::sens.slope(.$value)),
+         slope = purrr::map_dbl(sens, 'estimates'),
+         p.value = map_dbl(sens, 'p.value')) %>%
+  select(-data,-sens)
+
 sampChar <- read_csv('data/out/AW_GEE_Exports/SampleSiteCharacteristics_Medians.csv') %>%
   select(-BurnArea, -BurnYear) %>%
   rename(sampID = SampID) %>%
@@ -202,7 +229,7 @@ plotter <- function(att, cuts, pfProbH = 1.1, pfProbL = 0){
     geom_boxplot(width = .1) +
     geom_hline(yintercept =  0, color = 'red') +
     stat_summary(fun.data = give.n, geom = "text", fun = median, hjust = 1.1) +
-    coord_cartesian(ylim = c(-0.05,0.01)) +
+    coord_cartesian(ylim = c(-0.01,0.01)) +
     labs(x = att, y = 'Slope (% Area/year)') +
     facet_wrap(~Threshold, nrow = 1)
 }
@@ -231,6 +258,53 @@ plotter('BurnArea', cuts = c(0,0.1,0.2,0.5,0.75,1)) + labs(title = 'Percent Area
 plotter('soc')
 ##Good ones, gwt_cm_sav, area, "prm_pc_sse" isn't too bad (only 4 groups though), 'slt_pc_sav', 'snd_pc_sav', 'ari_ix_sav
 ```
+
+
+## Alternative viz
+
+```{r}
+
+filt <- sampMeans %>% filter(Threshold == 'area70') %>%
+  filter(Mean_Area > 3)
+
+
+tp %>% filter(name == 'frac_area', 
+              Threshold == 'Seasonal (70%)') %>%
+  left_join(sampChar) %>%
+  ungroup() %>%
+  #mutate(PFProb = cut_interval(PFProb, 100, labels = F)) %>%
+  mutate(PFProb = cut(PFProb, breaks = c(0,0.01,.20,.50,.99,1), labels = F)) %>%
+  ggplot(aes(x = PFProb, y = slope)) +
+  #geom_point(alpha = .0) +
+  stat_summary(
+    fun.min = function(z) { quantile(z,0.25) },
+    fun.max = function(z) { quantile(z,0.75) },
+    geom = 'ribbon', alpha = .1) +
+   stat_summary(fun = median, geom = 'line') +
+  coord_cartesian(ylim = c(-.02,.01))
+
+
+
+tp %>% filter(name == 'frac_area', 
+              Threshold == 'area70') %>%
+  left_join(sampChar) %>%
+  ungroup() %>%
+  mutate(PFProb = cut_interval(PFProb, 50)) %>%
+  #mutate(PFProb = cut(PFProb, breaks = c(0,0.01,.20,.50,.99,1), labels = F)) %>%
+  ggplot(aes(x = PFProb, y = slope)) +
+  #geom_point(alpha = .0) +
+  stat_summary(
+    fun = median,
+    fun.min = function(z) { quantile(z,0.25) },
+    fun.max = function(z) { quantile(z,0.75) },
+    geom = 'crossbar', alpha = .1) +
+   stat_summary(fun = mean, geom = 'line') +
+  coord_cartesian(ylim = c(-.02,.01))
+
+
+
+```
+
 
 ## Look at appearing and disapearing lakes
 
@@ -293,8 +367,6 @@ p2 <- plotter('Emerged')
 
 gridExtra::grid.arrange(p1,p2, nrow = 1)
 plotter('Unstable')
-
-
 
 ```
 
